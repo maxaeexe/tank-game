@@ -403,10 +403,12 @@ setInterval(() => {
             io.to(code).emit('gameState', {
                 players: Object.values(room.players).map(p => ({
                     id: p.id,
+                    name: p.name,
                     x: p.x,
                     y: p.y,
                     angle: p.angle,
                     hp: p.hp,
+                    score: p.score,
                     color: p.color
                 })),
                 bullets: room.bullets.map(b => ({

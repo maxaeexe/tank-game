@@ -1,4 +1,4 @@
-const socket = io();
+const socket = io({ transports: ['websocket'] });
 
 // UI Elements
 const mainMenu = document.getElementById('main-menu');
