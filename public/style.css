@@ -1,0 +1,435 @@
+:root {
+    --bg-color: #e0e0e0;
+    --panel-bg: rgba(255, 255, 255, 0.95);
+    --panel-border: #444;
+    --primary: #4CAF50;
+    --primary-hover: #45a049;
+    --secondary: #f44336;
+    --secondary-hover: #d32f2f;
+    --text: #222222;
+    --text-dim: #555555;
+    --glow: none;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 14px;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#background-fx {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at 50% 50%, #1a1a24 0%, #0a0a0e 100%);
+    z-index: 0;
+}
+
+/* Grid overlay effect */
+#background-fx::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 50px 50px;
+    z-index: 1;
+}
+
+#ui-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10;
+    pointer-events: none; /* Let clicks pass through if UI is hidden */
+}
+
+#ui-layer > * {
+    pointer-events: auto; /* Re-enable for panels */
+}
+
+.panel {
+    background: var(--panel-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--panel-border);
+    border-radius: 20px;
+    padding: 40px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    animation: fadeIn 0.4s ease-out;
+}
+
+.panel.active {
+    display: flex;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+h1.glitch {
+    font-size: 2rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    position: relative;
+    color: #222;
+    margin-bottom: 20px;
+    letter-spacing: 2px;
+}
+
+.subtitle {
+    color: var(--primary);
+    font-weight: 500;
+    letter-spacing: 5px;
+    margin-bottom: 40px;
+    font-size: 0.8rem;
+}
+
+.menu-actions {
+    display: flex;
+    gap: 30px;
+    align-items: stretch;
+}
+
+.card {
+    background: #f9f9f9;
+    padding: 30px;
+    border-radius: 5px;
+    border: 2px solid var(--panel-border);
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    width: 250px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 5px 0 #ccc;
+    border-color: #222;
+}
+
+.card h3 {
+    font-size: 0.9rem;
+    text-align: center;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.divider {
+    display: flex;
+    align-items: center;
+    color: var(--text-dim);
+    font-weight: 800;
+}
+
+.styled-input {
+    background: #fff;
+    border: 2px solid var(--panel-border);
+    color: #222;
+    padding: 12px 15px;
+    border-radius: 0px;
+    font-size: 0.8rem;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+}
+
+.styled-input:focus {
+    border-color: var(--primary);
+}
+
+.btn {
+    padding: 12px 20px;
+    border: 2px solid #222;
+    border-radius: 0;
+    font-weight: 800;
+    font-size: 0.8rem;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    box-shadow: 4px 4px 0 rgba(0,0,0,0.2);
+}
+
+.btn.primary {
+    background: var(--primary);
+    color: #fff;
+}
+
+.btn.primary:hover {
+    background: var(--primary-hover);
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.2);
+}
+
+.btn.secondary {
+    background: var(--secondary);
+    color: #fff;
+}
+
+.btn.secondary:hover {
+    background: var(--secondary-hover);
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.2);
+}
+
+.error-text {
+    color: #ff3366;
+    margin-top: 20px;
+    height: 20px;
+    font-weight: 500;
+}
+
+/* LOBBY */
+#lobby-menu {
+    width: 800px;
+    max-width: 90vw;
+}
+
+.highlight {
+    color: var(--primary);
+    text-shadow: var(--glow);
+    letter-spacing: 2px;
+}
+
+.lobby-content {
+    display: flex;
+    width: 100%;
+    gap: 40px;
+    margin-top: 30px;
+}
+
+.players-list-container {
+    flex: 1;
+    background: #f9f9f9;
+    border-radius: 5px;
+    padding: 20px;
+    border: 2px solid var(--panel-border);
+}
+
+#players-list {
+    list-style: none;
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.player-item {
+    display: flex;
+    align-items: center;
+    background: #fff;
+    padding: 10px 15px;
+    border-radius: 0;
+    border: 1px solid #ccc;
+    gap: 10px;
+    font-size: 0.8rem;
+}
+
+.color-indicator {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    box-shadow: 0 0 5px currentColor;
+}
+
+.customization {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #f9f9f9;
+    border-radius: 5px;
+    padding: 20px;
+    border: 2px solid var(--panel-border);
+}
+
+.color-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin: 20px 0;
+}
+
+.color-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 0;
+    border: 2px solid #888;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.color-btn:hover {
+    transform: scale(1.1);
+}
+
+.color-btn.active {
+    border-color: #222;
+    transform: scale(1.1);
+    box-shadow: 0 0 0 2px #222;
+}
+
+.color-btn.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    position: relative;
+}
+.color-btn.disabled::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 80%;
+    height: 2px;
+    background: red;
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.tank-preview {
+    margin-top: 20px;
+    width: 100px;
+    height: 100px;
+    background: #ddd;
+    border-radius: 5px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 2px solid var(--panel-border);
+}
+
+.tank-body {
+    width: 40px;
+    height: 40px;
+    background: gray;
+    border-radius: 2px;
+    position: relative;
+    border: 2px solid #222;
+    transition: background-color 0.3s;
+}
+
+.tank-turret {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 25px;
+    height: 10px;
+    background: #888;
+    transform-origin: 0 50%;
+    transform: translateY(-50%) rotate(-45deg);
+    border: 2px solid #222;
+}
+
+.lobby-footer {
+    margin-top: 40px;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
+.waiting-text {
+    color: var(--text-dim);
+    font-style: italic;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+/* GAME UI */
+#game-ui {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+#game-ui.hidden {
+    display: none;
+}
+
+.top-bar {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    right: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.health-container {
+    background: rgba(255,255,255,0.8);
+    padding: 10px;
+    border: 2px solid var(--panel-border);
+    color: #222;
+}
+
+.score-container {
+    background: rgba(255,255,255,0.8);
+    padding: 10px;
+    border: 2px solid var(--panel-border);
+    color: #222;
+    min-width: 150px;
+}
+
+.hp-label {
+    font-weight: 800;
+    font-size: 1rem;
+}
+
+.room-info {
+    background: rgba(255,255,255,0.8);
+    padding: 10px 20px;
+    border: 2px solid var(--panel-border);
+    font-weight: 800;
+    letter-spacing: 2px;
+    color: #222;
+}
+
+#game-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 5;
+    display: none;
+}
+
+.hidden {
+    display: none !important;
+}
