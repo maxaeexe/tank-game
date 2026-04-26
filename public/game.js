@@ -28,6 +28,16 @@ const hpBar = document.getElementById('hp-bar');
 const gameRoomCodeDisplay = document.getElementById('game-room-code');
 const respawnTimerText = document.getElementById('respawn-timer');
 
+// Chat elements
+const chatMessages = document.getElementById('chat-messages');
+const chatInput = document.getElementById('chat-input');
+
+// Spectate elements
+const spectateBar = document.getElementById('spectate-bar');
+const spectateName = document.getElementById('spectate-name');
+const spectatePrev = document.getElementById('spectate-prev');
+const spectateNext = document.getElementById('spectate-next');
+
 // Constants
 const availableColors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", "#1ABC9C", "#E67E22", "#E74C3C"];
 let myId = null;
@@ -61,6 +71,11 @@ let camera = { x: 0, y: 0, zoom: 20 };
 // ===== OFFSCREEN MAP CACHE =====
 let mapCache = null;
 let mapCacheDirty = true;
+
+// ===== SPECTATE STATE =====
+let isSpectating = false;
+let spectateTargetId = null;
+let chatFocused = false;
 
 // --- Username Validation ---
 
@@ -125,6 +140,50 @@ socket.on('joined', (data) => {
     }
     
     renderColorPicker();
+});
+
+// --- Mid-Game Join ---
+socket.on('joinedMidGame', (data) => {
+    myId = data.id;
+    isHost = false;
+
+    gameRoomCodeDisplay.innerText = data.code;
+
+    // Set up game state immediately
+    gameState.mapData = data.mapData;
+    gameState.players = data.players;
+    gameState.bullets = [];
+    mapCacheDirty = true;
+
+    // Load chat history
+    if (data.chatHistory) {
+        data.chatHistory.forEach(msg => addChatMessage(msg));
+    }
+
+    // Enter spectate mode immediately
+    isSpectating = true;
+    enterSpectateMode();
+
+    if (!gameState.playing) {
+        gameState.playing = true;
+        mainMenu.classList.remove('active');
+        lobbyMenu.classList.remove('active');
+        document.getElementById('ui-layer').style.pointerEvents = 'none';
+        gameUi.classList.remove('hidden');
+        canvas.style.display = 'block';
+        
+        resizeCanvas();
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            mapCacheDirty = true;
+        });
+        
+        // Show death screen for spectators
+        deathScreen.classList.remove('hidden');
+        respawnTimerText.innerText = 'WAITING FOR NEXT ROUND';
+
+        requestAnimationFrame(gameLoop);
+    }
 });
 
 socket.on('updateLobby', (players) => {
@@ -198,13 +257,14 @@ socket.on('newRound', (data) => {
     gameState.players = data.players;
     gameState.bullets = [];
     
-    // Reset interpolation state
     prevGameState = null;
     currGameState = null;
-    
-    // Mark map cache as dirty
     mapCacheDirty = true;
     
+    // Reset spectate & death state
+    isSpectating = false;
+    spectateTargetId = null;
+    spectateBar.classList.add('hidden');
     deathScreen.classList.add('hidden');
 
     if (!gameState.playing) {
@@ -233,7 +293,15 @@ function resizeCanvas() {
 
 window.addEventListener('keydown', (e) => {
     if (!gameState.playing) return;
+    if (chatFocused) return; // Don't handle game input when typing in chat
+    
     if (e.key.toLowerCase() === 'w') inputState.up = true;
+    
+    // Spectate: arrow keys to switch targets
+    if (isSpectating) {
+        if (e.key === 'ArrowLeft') cycleSpectate(-1);
+        if (e.key === 'ArrowRight') cycleSpectate(1);
+    }
 });
 
 window.addEventListener('keyup', (e) => {
@@ -245,6 +313,8 @@ canvas.addEventListener('mousemove', (e) => {
     if (!gameState.playing || !gameState.players[myId]) return;
     
     const myPlayer = gameState.players[myId];
+    if (myPlayer.hp <= 0) return; // Don't update angle when dead
+    
     const screenX = canvas.width / 2 + (myPlayer.x - camera.x) * camera.zoom;
     const screenY = canvas.height / 2 + (myPlayer.y - camera.y) * camera.zoom;
     
@@ -263,7 +333,7 @@ canvas.addEventListener('mouseup', (e) => {
 
 // Send input to server
 setInterval(() => {
-    if (gameState.playing) {
+    if (gameState.playing && !isSpectating) {
         const angleChanged = Math.abs(inputState.angle - lastSentInput.angle) > 0.02;
         const movementChanged = inputState.up !== lastSentInput.up;
         const shootingChanged = inputState.isShooting !== lastSentInput.isShooting;
@@ -277,12 +347,131 @@ setInterval(() => {
     }
 }, 1000 / 20);
 
+// --- Chat ---
+
+chatInput.addEventListener('focus', () => {
+    chatFocused = true;
+});
+
+chatInput.addEventListener('blur', () => {
+    chatFocused = false;
+});
+
+chatInput.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // Prevent game keys from firing
+    
+    if (e.key === 'Enter') {
+        const text = chatInput.value.trim();
+        if (text) {
+            socket.emit('chatMessage', text);
+            chatInput.value = '';
+        }
+        chatInput.blur();
+    }
+    if (e.key === 'Escape') {
+        chatInput.blur();
+    }
+});
+
+// Global Enter key to focus chat
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && gameState.playing && !chatFocused) {
+        e.preventDefault();
+        chatInput.focus();
+    }
+});
+
+socket.on('chatMessage', (msg) => {
+    addChatMessage(msg);
+});
+
+function addChatMessage(msg) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg' + (msg.type === 'system' ? ' system' : '');
+
+    if (msg.type === 'system') {
+        div.textContent = msg.text;
+    } else {
+        const sender = document.createElement('span');
+        sender.className = 'chat-sender';
+        sender.style.color = msg.color || '#fff';
+        sender.textContent = msg.sender + ':';
+
+        const text = document.createElement('span');
+        text.className = 'chat-text';
+        text.textContent = ' ' + msg.text;
+
+        div.appendChild(sender);
+        div.appendChild(text);
+    }
+
+    chatMessages.appendChild(div);
+
+    // Limit to 50 visible messages
+    while (chatMessages.children.length > 50) {
+        chatMessages.removeChild(chatMessages.firstChild);
+    }
+
+    // Auto-scroll to bottom
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// --- Spectate ---
+
+function enterSpectateMode() {
+    isSpectating = true;
+
+    // Find first alive player to spectate
+    const alivePlayers = getAlivePlayers();
+    if (alivePlayers.length > 0) {
+        spectateTargetId = alivePlayers[0].id;
+        updateSpectateUI();
+        spectateBar.classList.remove('hidden');
+    } else {
+        spectateTargetId = null;
+        spectateBar.classList.add('hidden');
+    }
+}
+
+function getAlivePlayers() {
+    return Object.values(gameState.players).filter(p => p.hp > 0 && p.id !== myId);
+}
+
+function cycleSpectate(direction) {
+    const alivePlayers = getAlivePlayers();
+    if (alivePlayers.length === 0) {
+        spectateTargetId = null;
+        spectateBar.classList.add('hidden');
+        return;
+    }
+
+    let currentIndex = alivePlayers.findIndex(p => p.id === spectateTargetId);
+    if (currentIndex === -1) currentIndex = 0;
+    
+    currentIndex = (currentIndex + direction + alivePlayers.length) % alivePlayers.length;
+    spectateTargetId = alivePlayers[currentIndex].id;
+    updateSpectateUI();
+}
+
+function updateSpectateUI() {
+    if (spectateTargetId && gameState.players[spectateTargetId]) {
+        const target = gameState.players[spectateTargetId];
+        spectateName.textContent = '👁 ' + target.name;
+        spectateName.style.color = target.color || '#FFD700';
+        spectateBar.classList.remove('hidden');
+    } else {
+        spectateBar.classList.add('hidden');
+    }
+}
+
+spectatePrev.addEventListener('click', () => cycleSpectate(-1));
+spectateNext.addEventListener('click', () => cycleSpectate(1));
+
 // --- Game State Update ---
 
 socket.on('gameState', (data) => {
     if (!gameState.playing) return;
 
-    // Unpack compact keys
     const expandedPlayers = {};
     for (let pid in data.players) {
         const p = data.players[pid];
@@ -298,13 +487,11 @@ socket.on('gameState', (data) => {
         };
     }
 
-    // Store previous state for interpolation
     prevGameState = currGameState;
     prevTimestamp = stateTimestamp;
     currGameState = { players: expandedPlayers, bullets: data.bullets };
     stateTimestamp = performance.now();
 
-    // Update authoritative state
     gameState.players = expandedPlayers;
     gameState.bullets = data.bullets;
 
@@ -312,9 +499,21 @@ socket.on('gameState', (data) => {
     if (myPlayer) {
         hpValue.innerText = Math.max(0, myPlayer.hp);
         
-        if (myPlayer.hp <= 0 && deathScreen.classList.contains('hidden')) {
+        if (myPlayer.hp <= 0 && !isSpectating) {
+            // Player just died — enter spectate mode
+            isSpectating = true;
             deathScreen.classList.remove('hidden');
-            respawnTimerText.innerText = 'WAIT FOR NEXT ROUND';
+            respawnTimerText.innerText = 'WAITING FOR NEXT ROUND';
+            enterSpectateMode();
+        }
+    }
+
+    // Update spectate UI if target died
+    if (isSpectating && spectateTargetId) {
+        const target = gameState.players[spectateTargetId];
+        if (!target || target.hp <= 0) {
+            // Target died, switch to next alive player
+            cycleSpectate(1);
         }
     }
 
@@ -343,20 +542,23 @@ function updateScoreUI() {
 }
 
 socket.on('playerDied', (data) => {
-    if (data.victim === myId && deathScreen.classList.contains('hidden')) {
+    if (data.victim === myId && !isSpectating) {
+        isSpectating = true;
         deathScreen.classList.remove('hidden');
-        respawnTimerText.innerText = 'WAIT FOR NEXT ROUND';
+        respawnTimerText.innerText = 'WAITING FOR NEXT ROUND';
+        enterSpectateMode();
     }
 });
 
 socket.on('roundWinner', (data) => {
-    // Could show a winner announcement here
-    console.log(`Round winner: ${data.name}`);
+    addChatMessage({
+        type: 'system',
+        text: `🏆 ${data.name} roundu kazandı!`
+    });
 });
 
 // --- Rendering ---
 
-// Build offscreen map cache (grid + walls)
 function buildMapCache() {
     if (!gameState.mapData) return;
 
@@ -369,11 +571,9 @@ function buildMapCache() {
     mapCache.height = cacheH;
     const mctx = mapCache.getContext('2d');
 
-    // Draw floor background
     mctx.fillStyle = '#e0e0e0';
     mctx.fillRect(0, 0, cacheW, cacheH);
 
-    // Draw grid lines
     mctx.strokeStyle = '#d0d0d0';
     mctx.lineWidth = 1;
     const cellSize = 10 * camera.zoom;
@@ -390,7 +590,6 @@ function buildMapCache() {
         mctx.stroke();
     }
 
-    // Draw walls
     mctx.fillStyle = '#666';
     mctx.strokeStyle = '#444';
     mctx.lineWidth = 2;
@@ -409,7 +608,6 @@ function buildMapCache() {
         mctx.strokeRect(wx, wy, ww, wh);
     }
 
-    // Draw outer boundary
     mctx.strokeStyle = '#555';
     mctx.lineWidth = 4;
     mctx.strokeRect(0, 0, cacheW, cacheH);
@@ -423,7 +621,6 @@ function drawCachedMap() {
     const startX = canvas.width / 2 - camera.x * camera.zoom;
     const startY = canvas.height / 2 - camera.y * camera.zoom;
 
-    // Calculate visible portion of the map cache
     const srcX = Math.max(0, Math.floor(-startX));
     const srcY = Math.max(0, Math.floor(-startY));
     const destX = Math.max(0, Math.floor(startX));
@@ -436,7 +633,6 @@ function drawCachedMap() {
     ctx.drawImage(mapCache, srcX, srcY, drawW, drawH, destX, destY, drawW, drawH);
 }
 
-// Interpolation helpers
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
@@ -451,7 +647,7 @@ function lerpAngle(a, b, t) {
 function getInterpolatedPlayers() {
     if (!prevGameState || !currGameState) return gameState.players;
 
-    const serverTickMs = 50; // 1000/20
+    const serverTickMs = 50;
     const elapsed = performance.now() - stateTimestamp;
     const t = Math.min(elapsed / serverTickMs, 1.0);
 
@@ -480,7 +676,6 @@ function drawPlayers(interpolatedPlayers) {
     const playerSize = 2 * camera.zoom;
     const radius = playerSize / 2;
 
-    // Viewport bounds for culling
     const vpLeft = -radius * 2;
     const vpRight = canvas.width + radius * 2;
     const vpTop = -radius * 2;
@@ -493,7 +688,6 @@ function drawPlayers(interpolatedPlayers) {
         const px = startX + p.x * camera.zoom;
         const py = startY + p.y * camera.zoom;
 
-        // Viewport culling
         if (px < vpLeft || px > vpRight || py < vpTop || py > vpBottom) continue;
 
         ctx.save();
@@ -505,10 +699,8 @@ function drawPlayers(interpolatedPlayers) {
         ctx.textAlign = 'center';
         ctx.fillText(p.name, 0, -radius - 15);
 
-        // Tank rotation
         ctx.rotate(p.angle);
         
-        // Base body
         ctx.fillStyle = p.color;
         ctx.strokeStyle = '#222';
         ctx.lineWidth = 2;
@@ -516,12 +708,10 @@ function drawPlayers(interpolatedPlayers) {
         ctx.fillRect(-radius, -radius, playerSize, playerSize);
         ctx.strokeRect(-radius, -radius, playerSize, playerSize);
         
-        // Turret barrel
         ctx.fillStyle = '#999';
         ctx.fillRect(0, -radius * 0.3, radius + 10, radius * 0.6);
         ctx.strokeRect(0, -radius * 0.3, radius + 10, radius * 0.6);
         
-        // Turret center
         ctx.fillStyle = '#666';
         ctx.beginPath();
         ctx.arc(0, 0, radius * 0.6, 0, Math.PI * 2);
@@ -537,7 +727,6 @@ function drawBullets() {
     const startY = canvas.height / 2 - camera.y * camera.zoom;
     const bulletScreenR = 0.2 * camera.zoom;
 
-    // Viewport bounds for culling
     const vpLeft = -bulletScreenR;
     const vpRight = canvas.width + bulletScreenR;
     const vpTop = -bulletScreenR;
@@ -551,7 +740,6 @@ function drawBullets() {
         const bx = startX + b.x * camera.zoom;
         const by = startY + b.y * camera.zoom;
 
-        // Viewport culling
         if (bx < vpLeft || bx > vpRight || by < vpTop || by > vpBottom) continue;
         
         ctx.beginPath();
@@ -563,30 +751,34 @@ function drawBullets() {
 function gameLoop() {
     if (!gameState.playing) return;
 
-    // Rebuild map cache if needed
     if (mapCacheDirty && gameState.mapData) {
         buildMapCache();
     }
 
-    // Get interpolated player positions
     const interpolatedPlayers = getInterpolatedPlayers();
 
-    // Smooth camera follow
-    const myPlayer = interpolatedPlayers[myId] || gameState.players[myId];
-    if (myPlayer) {
-        camera.x += (myPlayer.x - camera.x) * 0.1;
-        camera.y += (myPlayer.y - camera.y) * 0.1;
+    // Camera target: follow self if alive, or spectated player if dead
+    let cameraTarget = null;
+    
+    if (!isSpectating) {
+        // Follow self
+        cameraTarget = interpolatedPlayers[myId] || gameState.players[myId];
+    } else if (spectateTargetId && interpolatedPlayers[spectateTargetId]) {
+        // Follow spectated player
+        cameraTarget = interpolatedPlayers[spectateTargetId];
+    }
+
+    if (cameraTarget) {
+        camera.x += (cameraTarget.x - camera.x) * 0.1;
+        camera.y += (cameraTarget.y - camera.y) * 0.1;
     } else if (gameState.mapData) {
         camera.x = gameState.mapData.size / 2;
         camera.y = gameState.mapData.size / 2;
     }
 
-    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw cached map
     drawCachedMap();
-
     drawBullets();
     drawPlayers(interpolatedPlayers);
 

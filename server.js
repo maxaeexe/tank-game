@@ -183,7 +183,7 @@ function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
 
 const colors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", "#1ABC9C", "#E67E22", "#E74C3C"];
 
-// Sanitize username — strip dangerous chars, limit length
+// Sanitize username
 function sanitizeName(name) {
     if (!name || typeof name !== 'string') return '';
     return name.replace(/[<>&"'\/\\]/g, '').trim().substring(0, 16);
@@ -208,8 +208,10 @@ io.on('connection', (socket) => {
             mode: mode,
             status: 'waiting',
             players: {},
+            spectators: {},  // Players who joined mid-game
             bullets: [],
-            mapData: null
+            mapData: null,
+            chatHistory: []  // Store last 50 messages
         };
 
         joinRoom(socket, code, name);
@@ -223,10 +225,21 @@ io.on('connection', (socket) => {
         }
 
         code = code.toUpperCase();
-        if (rooms[code] && rooms[code].status === 'waiting') {
+        if (!rooms[code]) {
+            socket.emit('errorMsg', 'Oda bulunamadı.');
+            return;
+        }
+
+        const room = rooms[code];
+
+        if (room.status === 'waiting') {
+            // Normal lobby join
             joinRoom(socket, code, name);
+        } else if (room.status === 'playing' || room.status === 'round_over') {
+            // Mid-game join as spectator
+            joinMidGame(socket, code, name);
         } else {
-            socket.emit('errorMsg', 'Oda bulunamadı veya oyun zaten başlamış.');
+            socket.emit('errorMsg', 'Bu odaya şu anda katılamazsınız.');
         }
     });
 
@@ -239,7 +252,6 @@ io.on('connection', (socket) => {
 
         socket.join(code);
         
-        // Assign color
         const usedColors = Object.values(room.players).map(p => p.color);
         const availableColors = colors.filter(c => !usedColors.includes(c));
         const color = availableColors[0] || "#FFFFFF";
@@ -261,6 +273,83 @@ io.on('connection', (socket) => {
         socket.emit('joined', { code, isHost: room.host === socket.id, id: socket.id });
         io.to(code).emit('updateLobby', Object.values(room.players));
     }
+
+    // Mid-game join: player enters as dead spectator, will be alive next round
+    function joinMidGame(socket, code, playerName) {
+        const room = rooms[code];
+        const totalPlayers = Object.keys(room.players).length;
+        if (totalPlayers >= 8) {
+            socket.emit('errorMsg', 'Oda dolu.');
+            return;
+        }
+
+        socket.join(code);
+
+        const usedColors = Object.values(room.players).map(p => p.color);
+        const availableColors = colors.filter(c => !usedColors.includes(c));
+        const color = availableColors[0] || "#FFFFFF";
+
+        // Add as player but with hp=0 (dead/spectating)
+        room.players[socket.id] = {
+            id: socket.id,
+            name: playerName,
+            color: color,
+            x: room.mapData ? room.mapData.size / 2 : 0,
+            y: room.mapData ? room.mapData.size / 2 : 0,
+            angle: 0,
+            hp: 0,  // Dead — spectating until next round
+            score: 0,
+            lastShot: 0,
+            isHost: false
+        };
+
+        socket.roomCode = code;
+
+        // Send current game state to the new joiner
+        const clientMapData = {
+            size: room.mapData.size,
+            walls: room.mapData.walls
+        };
+
+        socket.emit('joinedMidGame', {
+            code,
+            id: socket.id,
+            mapData: clientMapData,
+            players: room.players,
+            chatHistory: room.chatHistory
+        });
+
+        // Notify everyone about the new player
+        io.to(code).emit('chatMessage', {
+            type: 'system',
+            text: `${playerName} oyuna katıldı (izleyici olarak)`
+        });
+    }
+
+    // ===== CHAT =====
+    socket.on('chatMessage', (text) => {
+        if (!socket.roomCode) return;
+        const room = rooms[socket.roomCode];
+        if (!room || !room.players[socket.id]) return;
+
+        // Sanitize and limit message
+        const cleanText = String(text).replace(/[<>&]/g, '').trim().substring(0, 100);
+        if (!cleanText) return;
+
+        const msg = {
+            type: 'player',
+            sender: room.players[socket.id].name,
+            color: room.players[socket.id].color,
+            text: cleanText,
+            time: Date.now()
+        };
+
+        // Store in history (max 50)
+        room.chatHistory.push(msg);
+        if (room.chatHistory.length > 50) room.chatHistory.shift();
+
+        io.to(socket.roomCode).emit('chatMessage', msg);
+    });
 
     socket.on('changeColor', (color) => {
         if (!socket.roomCode) return;
@@ -302,7 +391,6 @@ io.on('connection', (socket) => {
             newY += Math.sin(player.angle) * speed;
         }
 
-        // Collision with walls — use spatial grid
         const playerSize = 2;
         const playerRect = { x: newX - playerSize/2, y: newY - playerSize/2, width: playerSize, height: playerSize };
         let hitWall = false;
@@ -320,7 +408,6 @@ io.on('connection', (socket) => {
             player.y = newY;
         }
 
-        // Shooting
         if (input.isShooting) {
             const now = Date.now();
             if (now - player.lastShot > 800) {
@@ -352,6 +439,24 @@ io.on('connection', (socket) => {
                     room.players[room.host].isHost = true;
                 }
                 io.to(socket.roomCode).emit('updateLobby', Object.values(room.players));
+
+                // If game is playing, check if round should end
+                if (room.status === 'playing') {
+                    const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
+                    if (alivePlayers.length <= 1) {
+                        if (alivePlayers.length === 1) {
+                            io.to(socket.roomCode).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
+                        }
+                        room.status = 'round_over';
+                        const code = socket.roomCode;
+                        setTimeout(() => {
+                            if (rooms[code]) {
+                                rooms[code].status = 'playing';
+                                startNewRound(rooms[code], code);
+                            }
+                        }, 3000);
+                    }
+                }
             }
         }
         console.log('User disconnected:', socket.id);
@@ -365,6 +470,7 @@ function startNewRound(room, code) {
     room.mapData = generateMap(playerCount);
     room.bullets = [];
 
+    // Spawn ALL players (including mid-game joiners who were spectating)
     for (let id in room.players) {
         const player = room.players[id];
         const gridX = Math.floor(Math.random() * (room.mapData.size / 10));
@@ -375,7 +481,6 @@ function startNewRound(room, code) {
         player.angle = 0;
     }
 
-    // Send map data WITHOUT spatial grid (client doesn't need it)
     const clientMapData = {
         size: room.mapData.size,
         walls: room.mapData.walls
@@ -456,11 +561,9 @@ setInterval(() => {
                                 }
                                 io.to(code).emit('playerDied', { victim: pid, killer: b.owner });
                                 
-                                // Check how many players are still alive
                                 const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
                                 
                                 if (alivePlayers.length <= 1) {
-                                    // Last man standing — give winner a bonus point
                                     if (alivePlayers.length === 1) {
                                         io.to(code).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
                                     }
@@ -480,7 +583,6 @@ setInterval(() => {
                 }
             }
 
-            // Swap-and-pop removal
             if (removeBullet) {
                 bullets[i] = bullets[bullets.length - 1];
                 bullets.pop();
@@ -516,7 +618,7 @@ setInterval(() => {
             bullets: compactBullets
         });
     }
-}, 1000 / 20); // 20 tick rate
+}, 1000 / 20);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
