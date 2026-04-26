@@ -399,9 +399,11 @@ setInterval(() => {
                 }
             }
 
-            // server.js içindeki io.to(code).emit('gameState', ...) kısmını bununla değiştir:
-            io.to(code).emit('gameState', {
-                players: Object.values(room.players).map(p => ({
+            // Optimize players to an object so the client can still use gameState.players[myId]
+            const optimizedPlayers = {};
+            for (let pid in room.players) {
+                const p = room.players[pid];
+                optimizedPlayers[pid] = {
                     id: p.id,
                     name: p.name,
                     x: p.x,
@@ -410,7 +412,11 @@ setInterval(() => {
                     hp: p.hp,
                     score: p.score,
                     color: p.color
-                })),
+                };
+            }
+
+            io.to(code).emit('gameState', {
+                players: optimizedPlayers,
                 bullets: room.bullets.map(b => ({
                     x: b.x,
                     y: b.y
