@@ -41,13 +41,26 @@ let gameState = {
     bullets: []
 };
 
+// ===== INTERPOLATION STATE =====
+let prevGameState = null;  // Previous server state
+let currGameState = null;  // Current server state
+let stateTimestamp = 0;    // When we received current state
+let prevTimestamp = 0;     // When we received previous state
+
 let inputState = {
     up: false,
     angle: 0,
     isShooting: false
 };
 
+// Track if input changed to avoid sending duplicate data
+let lastSentInput = { up: false, angle: 0, isShooting: false };
+
 let camera = { x: 0, y: 0, zoom: 20 }; // zoom is pixels per unit
+
+// ===== OFFSCREEN MAP CACHE =====
+let mapCache = null;       // OffscreenCanvas for static map elements
+let mapCacheDirty = true;  // Whether we need to redraw the cache
 
 // --- Main Menu ---
 
@@ -168,6 +181,13 @@ socket.on('newRound', (data) => {
     gameState.players = data.players;
     gameState.bullets = [];
     
+    // Reset interpolation state
+    prevGameState = null;
+    currGameState = null;
+    
+    // Mark map cache as dirty — needs redraw
+    mapCacheDirty = true;
+    
     deathScreen.classList.add('hidden');
 
     if (!gameState.playing) {
@@ -178,7 +198,10 @@ socket.on('newRound', (data) => {
         canvas.style.display = 'block';
         
         resizeCanvas();
-        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            mapCacheDirty = true; // resize invalidates cache
+        });
         
         // Start local loop
         requestAnimationFrame(gameLoop);
@@ -224,18 +247,53 @@ canvas.addEventListener('mouseup', (e) => {
     if (e.button === 0) inputState.isShooting = false;
 });
 
-// Send input to server at a fixed interval
+// Send input to server — only when changed or shooting, at reduced rate
 setInterval(() => {
     if (gameState.playing) {
-        socket.emit('playerInput', inputState);
+        // Always send if shooting (server needs continuous signal)
+        // Otherwise, only send when input actually changed
+        const angleChanged = Math.abs(inputState.angle - lastSentInput.angle) > 0.02;
+        const movementChanged = inputState.up !== lastSentInput.up;
+        const shootingChanged = inputState.isShooting !== lastSentInput.isShooting;
+
+        if (angleChanged || movementChanged || shootingChanged || inputState.isShooting || inputState.up) {
+            socket.emit('playerInput', inputState);
+            lastSentInput.up = inputState.up;
+            lastSentInput.angle = inputState.angle;
+            lastSentInput.isShooting = inputState.isShooting;
+        }
     }
-}, 1000 / 30);
+}, 1000 / 20); // Match server tick rate (20)
 
 // --- Game State Update ---
 
 socket.on('gameState', (data) => {
     if (!gameState.playing) return;
-    gameState.players = data.players;
+
+    // Unpack compact keys back to full names
+    const expandedPlayers = {};
+    for (let pid in data.players) {
+        const p = data.players[pid];
+        expandedPlayers[pid] = {
+            id: p.id,
+            name: p.n,
+            x: p.x,
+            y: p.y,
+            angle: p.a,
+            hp: p.hp,
+            score: p.s,
+            color: p.c
+        };
+    }
+
+    // Store previous state for interpolation
+    prevGameState = currGameState;
+    prevTimestamp = stateTimestamp;
+    currGameState = { players: expandedPlayers, bullets: data.bullets };
+    stateTimestamp = performance.now();
+
+    // Update authoritative state
+    gameState.players = expandedPlayers;
     gameState.bullets = data.bullets;
 
     const myPlayer = gameState.players[myId];
@@ -249,7 +307,17 @@ socket.on('gameState', (data) => {
         }
     }
 
-    // Update Score UI
+    // Update Score UI — throttled, not every frame
+    updateScoreUI();
+});
+
+// Throttle score UI updates
+let lastScoreUpdate = 0;
+function updateScoreUI() {
+    const now = performance.now();
+    if (now - lastScoreUpdate < 500) return; // Update at most every 500ms
+    lastScoreUpdate = now;
+
     const scoreList = document.getElementById('score-list');
     if (scoreList) {
         scoreList.innerHTML = '';
@@ -262,7 +330,7 @@ socket.on('gameState', (data) => {
                 scoreList.appendChild(li);
             });
     }
-});
+}
 
 socket.on('playerDied', (data) => {
     if (data.victim === myId && deathScreen.classList.contains('hidden')) {
@@ -273,74 +341,152 @@ socket.on('playerDied', (data) => {
 
 // --- Rendering ---
 
-function drawGrid() {
-    const s = gameState.mapData.size * camera.zoom;
-    const startX = canvas.width / 2 - camera.x * camera.zoom;
-    const startY = canvas.height / 2 - camera.y * camera.zoom;
+// Build offscreen map cache (grid + walls) — only redrawn when map changes
+function buildMapCache() {
+    if (!gameState.mapData) return;
+
+    const mapSize = gameState.mapData.size;
+    const cacheW = mapSize * camera.zoom;
+    const cacheH = mapSize * camera.zoom;
+
+    // Create offscreen canvas for map
+    mapCache = document.createElement('canvas');
+    mapCache.width = cacheW;
+    mapCache.height = cacheH;
+    const mctx = mapCache.getContext('2d');
 
     // Draw floor background
-    ctx.fillStyle = '#e0e0e0';
-    ctx.fillRect(startX, startY, s, s);
-
-    ctx.strokeStyle = '#d0d0d0';
-    ctx.lineWidth = 1;
+    mctx.fillStyle = '#e0e0e0';
+    mctx.fillRect(0, 0, cacheW, cacheH);
 
     // Draw grid lines
+    mctx.strokeStyle = '#d0d0d0';
+    mctx.lineWidth = 1;
     const cellSize = 10 * camera.zoom;
-    for (let x = 0; x <= s; x += cellSize) {
-        ctx.beginPath();
-        ctx.moveTo(startX + x, startY);
-        ctx.lineTo(startX + x, startY + s);
-        ctx.stroke();
+    for (let x = 0; x <= cacheW; x += cellSize) {
+        mctx.beginPath();
+        mctx.moveTo(x, 0);
+        mctx.lineTo(x, cacheH);
+        mctx.stroke();
     }
-    for (let y = 0; y <= s; y += cellSize) {
-        ctx.beginPath();
-        ctx.moveTo(startX, startY + y);
-        ctx.lineTo(startX + s, startY + y);
-        ctx.stroke();
+    for (let y = 0; y <= cacheH; y += cellSize) {
+        mctx.beginPath();
+        mctx.moveTo(0, y);
+        mctx.lineTo(cacheW, y);
+        mctx.stroke();
     }
-}
 
-function drawMap() {
-    const startX = canvas.width / 2 - camera.x * camera.zoom;
-    const startY = canvas.height / 2 - camera.y * camera.zoom;
-
-    // Outer boundary
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(startX, startY, gameState.mapData.size * camera.zoom, gameState.mapData.size * camera.zoom);
-
-    // Walls
-    ctx.fillStyle = '#666';
-    ctx.strokeStyle = '#444';
-    ctx.lineWidth = 2;
+    // Draw walls
+    mctx.fillStyle = '#666';
+    mctx.strokeStyle = '#444';
+    mctx.lineWidth = 2;
     
-    gameState.mapData.walls.forEach(wall => {
-        // Skip boundary walls for drawing, we drew a big box
-        if (wall.isBoundary) return;
+    const walls = gameState.mapData.walls;
+    for (let i = 0; i < walls.length; i++) {
+        const wall = walls[i];
+        if (wall.isBoundary) continue;
 
-        const wx = startX + wall.x * camera.zoom;
-        const wy = startY + wall.y * camera.zoom;
+        const wx = wall.x * camera.zoom;
+        const wy = wall.y * camera.zoom;
         const ww = wall.width * camera.zoom;
         const wh = wall.height * camera.zoom;
 
-        ctx.fillRect(wx, wy, ww, wh);
-        ctx.strokeRect(wx, wy, ww, wh);
-    });
+        mctx.fillRect(wx, wy, ww, wh);
+        mctx.strokeRect(wx, wy, ww, wh);
+    }
+
+    // Draw outer boundary
+    mctx.strokeStyle = '#555';
+    mctx.lineWidth = 4;
+    mctx.strokeRect(0, 0, cacheW, cacheH);
+
+    mapCacheDirty = false;
 }
 
-function drawPlayers() {
+function drawCachedMap() {
+    if (!mapCache) return;
+
+    const startX = canvas.width / 2 - camera.x * camera.zoom;
+    const startY = canvas.height / 2 - camera.y * camera.zoom;
+
+    // Only draw the visible portion (viewport culling)
+    const srcX = Math.max(0, -startX);
+    const srcY = Math.max(0, -startY);
+    const srcW = Math.min(mapCache.width - srcX, canvas.width - Math.max(0, startX));
+    const srcH = Math.min(mapCache.height - srcY, canvas.height - Math.max(0, startY));
+
+    if (srcW <= 0 || srcH <= 0) return;
+
+    const destX = Math.max(0, startX) + srcX - Math.max(0, -startX + srcX);
+    const destY = Math.max(0, startY) + srcY - Math.max(0, -startY + srcY);
+
+    // Simpler approach: just drawImage with clipping
+    ctx.drawImage(mapCache, 
+        srcX, srcY, srcW, srcH,
+        Math.max(0, startX), Math.max(0, startY), srcW, srcH
+    );
+}
+
+// Interpolate a value between prev and curr
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
+// Interpolate angle (handle wrapping)
+function lerpAngle(a, b, t) {
+    let diff = b - a;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    return a + diff * t;
+}
+
+function getInterpolatedPlayers() {
+    if (!prevGameState || !currGameState) return gameState.players;
+
+    const serverTickMs = 50; // 1000/20 = 50ms between ticks
+    const elapsed = performance.now() - stateTimestamp;
+    const t = Math.min(elapsed / serverTickMs, 1.0);
+
+    const result = {};
+    for (let pid in currGameState.players) {
+        const curr = currGameState.players[pid];
+        const prev = prevGameState.players[pid];
+
+        if (prev) {
+            result[pid] = {
+                ...curr,
+                x: lerp(prev.x, curr.x, t),
+                y: lerp(prev.y, curr.y, t),
+                angle: lerpAngle(prev.angle, curr.angle, t)
+            };
+        } else {
+            result[pid] = curr;
+        }
+    }
+    return result;
+}
+
+function drawPlayers(interpolatedPlayers) {
     const startX = canvas.width / 2 - camera.x * camera.zoom;
     const startY = canvas.height / 2 - camera.y * camera.zoom;
     const playerSize = 2 * camera.zoom; // width/height
     const radius = playerSize / 2;
 
-    for (let id in gameState.players) {
-        const p = gameState.players[id];
+    // Viewport bounds for culling
+    const vpLeft = -radius * 2;
+    const vpRight = canvas.width + radius * 2;
+    const vpTop = -radius * 2;
+    const vpBottom = canvas.height + radius * 2;
+
+    for (let id in interpolatedPlayers) {
+        const p = interpolatedPlayers[id];
         if (p.hp <= 0) continue;
 
         const px = startX + p.x * camera.zoom;
         const py = startY + p.y * camera.zoom;
+
+        // Viewport culling — skip off-screen players
+        if (px < vpLeft || px > vpRight || py < vpTop || py > vpBottom) continue;
 
         ctx.save();
         ctx.translate(px, py);
@@ -381,25 +527,44 @@ function drawPlayers() {
 function drawBullets() {
     const startX = canvas.width / 2 - camera.x * camera.zoom;
     const startY = canvas.height / 2 - camera.y * camera.zoom;
+    const bulletScreenR = 0.2 * camera.zoom;
 
-    ctx.fillStyle = '#fff';
-    
-    gameState.bullets.forEach(b => {
+    // Viewport bounds for culling
+    const vpLeft = -bulletScreenR;
+    const vpRight = canvas.width + bulletScreenR;
+    const vpTop = -bulletScreenR;
+    const vpBottom = canvas.height + bulletScreenR;
+
+    ctx.fillStyle = '#000';
+
+    const bullets = gameState.bullets;
+    for (let i = 0; i < bullets.length; i++) {
+        const b = bullets[i];
         const bx = startX + b.x * camera.zoom;
         const by = startY + b.y * camera.zoom;
+
+        // Viewport culling
+        if (bx < vpLeft || bx > vpRight || by < vpTop || by > vpBottom) continue;
         
-        ctx.fillStyle = '#000';
         ctx.beginPath();
-        ctx.arc(bx, by, 0.2 * camera.zoom, 0, Math.PI * 2);
+        ctx.arc(bx, by, bulletScreenR, 0, Math.PI * 2);
         ctx.fill();
-    });
+    }
 }
 
 function gameLoop() {
     if (!gameState.playing) return;
 
-    // Smooth camera follow
-    const myPlayer = gameState.players[myId];
+    // Rebuild map cache if needed
+    if (mapCacheDirty && gameState.mapData) {
+        buildMapCache();
+    }
+
+    // Get interpolated player positions
+    const interpolatedPlayers = getInterpolatedPlayers();
+
+    // Smooth camera follow using interpolated position
+    const myPlayer = interpolatedPlayers[myId] || gameState.players[myId];
     if (myPlayer) {
         camera.x += (myPlayer.x - camera.x) * 0.1;
         camera.y += (myPlayer.y - camera.y) * 0.1;
@@ -411,10 +576,11 @@ function gameLoop() {
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    drawGrid();
-    drawMap();
+    // Draw cached map (grid + walls in one drawImage call)
+    drawCachedMap();
+
     drawBullets();
-    drawPlayers();
+    drawPlayers(interpolatedPlayers);
 
     requestAnimationFrame(gameLoop);
 }

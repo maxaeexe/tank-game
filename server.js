@@ -27,6 +27,56 @@ function generateRoomCode() {
     return result;
 }
 
+// ===== SPATIAL GRID for fast wall collision lookups =====
+function buildSpatialGrid(walls, mapSize) {
+    const cellSize = 10; // spatial cell size in game units
+    const gridW = Math.ceil(mapSize / cellSize) + 2;
+    const gridH = Math.ceil(mapSize / cellSize) + 2;
+    const grid = new Array(gridW * gridH);
+    for (let i = 0; i < grid.length; i++) grid[i] = [];
+
+    for (let wi = 0; wi < walls.length; wi++) {
+        const wall = walls[wi];
+        const minCX = Math.max(0, Math.floor((wall.x + 1) / cellSize));
+        const maxCX = Math.min(gridW - 1, Math.floor((wall.x + wall.width + 1) / cellSize));
+        const minCY = Math.max(0, Math.floor((wall.y + 1) / cellSize));
+        const maxCY = Math.min(gridH - 1, Math.floor((wall.y + wall.height + 1) / cellSize));
+
+        for (let cx = minCX; cx <= maxCX; cx++) {
+            for (let cy = minCY; cy <= maxCY; cy++) {
+                grid[cy * gridW + cx].push(wi);
+            }
+        }
+    }
+
+    return { grid, cellSize, gridW, gridH };
+}
+
+function getWallsNear(spatialGrid, x, y, radius) {
+    const { grid, cellSize, gridW, gridH } = spatialGrid;
+    const minCX = Math.max(0, Math.floor((x - radius + 1) / cellSize));
+    const maxCX = Math.min(gridW - 1, Math.floor((x + radius + 1) / cellSize));
+    const minCY = Math.max(0, Math.floor((y - radius + 1) / cellSize));
+    const maxCY = Math.min(gridH - 1, Math.floor((y + radius + 1) / cellSize));
+
+    const seen = new Set();
+    const result = [];
+
+    for (let cx = minCX; cx <= maxCX; cx++) {
+        for (let cy = minCY; cy <= maxCY; cy++) {
+            const cell = grid[cy * gridW + cx];
+            for (let i = 0; i < cell.length; i++) {
+                const wi = cell[i];
+                if (!seen.has(wi)) {
+                    seen.add(wi);
+                    result.push(wi);
+                }
+            }
+        }
+    }
+    return result;
+}
+
 // Utility: Generate Map based on player count
 function generateMap(playerCount) {
     let size = 50;
@@ -101,7 +151,10 @@ function generateMap(playerCount) {
     walls.push({ x: -1, y: -1, width: 1, height: size + 2, isBoundary: true }); // Left
     walls.push({ x: size, y: -1, width: 1, height: size + 2, isBoundary: true }); // Right
 
-    return { size, walls };
+    // Build spatial grid for this map
+    const spatialGrid = buildSpatialGrid(walls, size);
+
+    return { size, walls, spatialGrid };
 }
 
 // Map Collision Check (AABB)
@@ -114,22 +167,21 @@ function checkCollision(rect1, rect2) {
     );
 }
 
-// Circle - Rect Collision
-function circleRectCollision(circle, rect) {
-    let testX = circle.x;
-    let testY = circle.y;
+// Circle - Rect Collision (inlined math, no sqrt when possible)
+function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
+    let testX = cx;
+    let testY = cy;
 
-    if (circle.x < rect.x) testX = rect.x;
-    else if (circle.x > rect.x + rect.width) testX = rect.x + rect.width;
+    if (cx < rx) testX = rx;
+    else if (cx > rx + rw) testX = rx + rw;
     
-    if (circle.y < rect.y) testY = rect.y;
-    else if (circle.y > rect.y + rect.height) testY = rect.y + rect.height;
+    if (cy < ry) testY = ry;
+    else if (cy > ry + rh) testY = ry + rh;
 
-    let distX = circle.x - testX;
-    let distY = circle.y - testY;
-    let distance = Math.sqrt((distX*distX) + (distY*distY));
-
-    return distance <= circle.radius;
+    const distX = cx - testX;
+    const distY = cy - testY;
+    // Compare squared distance to avoid sqrt
+    return (distX * distX + distY * distY) <= radius * radius;
 }
 
 const colors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", "#1ABC9C", "#E67E22", "#E74C3C"];
@@ -238,13 +290,14 @@ io.on('connection', (socket) => {
             newY += Math.sin(player.angle) * speed;
         }
 
-        // Collision with walls
+        // Collision with walls — use spatial grid
         const playerSize = 2; // radius or half-width
         const playerRect = { x: newX - playerSize/2, y: newY - playerSize/2, width: playerSize, height: playerSize };
         let hitWall = false;
 
-        for (let wall of room.mapData.walls) {
-            if (checkCollision(playerRect, wall)) {
+        const nearbyIndices = getWallsNear(room.mapData.spatialGrid, newX, newY, playerSize);
+        for (let j = 0; j < nearbyIndices.length; j++) {
+            if (checkCollision(playerRect, room.mapData.walls[nearbyIndices[j]])) {
                 hitWall = true;
                 break;
             }
@@ -311,8 +364,14 @@ function startNewRound(room, code) {
         player.angle = 0;
     }
 
+    // Send map data WITHOUT spatial grid (client doesn't need it)
+    const clientMapData = {
+        size: room.mapData.size,
+        walls: room.mapData.walls
+    };
+
     io.to(code).emit('newRound', {
-        mapData: room.mapData,
+        mapData: clientMapData,
         players: room.players
     });
 }
@@ -320,63 +379,72 @@ function startNewRound(room, code) {
 setInterval(() => {
     for (let code in rooms) {
         const room = rooms[code];
-        if (room.status === 'playing') {
-            // Update bullets
-            for (let i = room.bullets.length - 1; i >= 0; i--) {
-                const b = room.bullets[i];
+        if (room.status !== 'playing') continue;
+
+        const walls = room.mapData.walls;
+        const spatialGrid = room.mapData.spatialGrid;
+        const now = Date.now();
+
+        // Update bullets — use swap-and-pop instead of splice
+        const bullets = room.bullets;
+        let bulletCount = bullets.length;
+
+        for (let i = bulletCount - 1; i >= 0; i--) {
+            const b = bullets[i];
+            let removeBullet = false;
+            
+            // Sub-stepping for wall collision (reduced to 3 steps)
+            const steps = 3;
+            const stepVx = b.vx / steps;
+            const stepVy = b.vy / steps;
+            let hitWall = null;
+            const bulletRadius = 0.2;
+            
+            for (let step = 0; step < steps; step++) {
+                b.x += stepVx;
+                b.y += stepVy;
                 
-                // Merminin duvardan geçmesini önlemek için hareketi küçük adımlara böl
-                const steps = 4;
-                const stepVx = b.vx / steps;
-                const stepVy = b.vy / steps;
-                let hitWall = null;
-                const bulletRadius = 0.2;
-                
-                for (let step = 0; step < steps; step++) {
-                    b.x += stepVx;
-                    b.y += stepVy;
+                // Use spatial grid to only check nearby walls
+                const nearbyIndices = getWallsNear(spatialGrid, b.x, b.y, bulletRadius + 2);
+                for (let j = 0; j < nearbyIndices.length; j++) {
+                    const wall = walls[nearbyIndices[j]];
+                    if (circleRectCollision(b.x, b.y, bulletRadius, wall.x, wall.y, wall.width, wall.height)) {
+                        hitWall = wall;
+                        break;
+                    }
+                }
+                if (hitWall) break;
+            }
+
+            if (hitWall) {
+                if (b.bounces > 0) {
+                    b.bounces--;
+                    // Push bullet out of the wall
+                    const overlapLeft = b.x + bulletRadius - hitWall.x;
+                    const overlapRight = hitWall.x + hitWall.width - (b.x - bulletRadius);
+                    const overlapTop = b.y + bulletRadius - hitWall.y;
+                    const overlapBottom = hitWall.y + hitWall.height - (b.y - bulletRadius);
                     
-                    const bulletCircle = { x: b.x, y: b.y, radius: bulletRadius };
-                    for (let wall of room.mapData.walls) {
-                        if (circleRectCollision(bulletCircle, wall)) {
-                            hitWall = wall;
-                            break;
-                        }
-                    }
-                    if (hitWall) break;
+                    const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+                    
+                    if (minOverlap === overlapLeft) { b.vx = -Math.abs(b.vx); b.x = hitWall.x - bulletRadius - 0.05; }
+                    else if (minOverlap === overlapRight) { b.vx = Math.abs(b.vx); b.x = hitWall.x + hitWall.width + bulletRadius + 0.05; }
+                    else if (minOverlap === overlapTop) { b.vy = -Math.abs(b.vy); b.y = hitWall.y - bulletRadius - 0.05; }
+                    else if (minOverlap === overlapBottom) { b.vy = Math.abs(b.vy); b.y = hitWall.y + hitWall.height + bulletRadius + 0.05; }
+                } else {
+                    removeBullet = true;
                 }
+            }
 
-                if (hitWall) {
-                    if (b.bounces > 0) {
-                        b.bounces--;
-                        // Push bullet out of the wall
-                        const overlapLeft = b.x + bulletRadius - hitWall.x;
-                        const overlapRight = hitWall.x + hitWall.width - (b.x - bulletRadius);
-                        const overlapTop = b.y + bulletRadius - hitWall.y;
-                        const overlapBottom = hitWall.y + hitWall.height - (b.y - bulletRadius);
-                        
-                        const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
-                        
-                        if (minOverlap === overlapLeft) { b.vx = -Math.abs(b.vx); b.x = hitWall.x - bulletRadius - 0.05; }
-                        else if (minOverlap === overlapRight) { b.vx = Math.abs(b.vx); b.x = hitWall.x + hitWall.width + bulletRadius + 0.05; }
-                        else if (minOverlap === overlapTop) { b.vy = -Math.abs(b.vy); b.y = hitWall.y - bulletRadius - 0.05; }
-                        else if (minOverlap === overlapBottom) { b.vy = Math.abs(b.vy); b.y = hitWall.y + hitWall.height + bulletRadius + 0.05; }
-                    } else {
-                        room.bullets.splice(i, 1);
-                        continue;
-                    }
-                }
-
+            if (!removeBullet) {
                 // Player collision
-                const finalBulletCircle = { x: b.x, y: b.y, radius: bulletRadius };
                 for (let pid in room.players) {
                     const p = room.players[pid];
                     // A bullet cannot hit its own shooter for the first 200ms (prevents instant suicide when shooting walls)
-                    if (p.hp > 0 && (b.owner !== pid || (Date.now() - b.createdAt > 200))) {
-                        const playerRect = { x: p.x - 1, y: p.y - 1, width: 2, height: 2 };
-                        if (circleRectCollision(finalBulletCircle, playerRect)) {
+                    if (p.hp > 0 && (b.owner !== pid || (now - b.createdAt > 200))) {
+                        if (circleRectCollision(b.x, b.y, bulletRadius, p.x - 1, p.y - 1, 2, 2)) {
                             p.hp -= 1; // 1 hit to die
-                            room.bullets.splice(i, 1);
+                            removeBullet = true;
                             
                             if (p.hp <= 0) {
                                 // Grant score to killer
@@ -399,32 +467,44 @@ setInterval(() => {
                 }
             }
 
-            // Optimize players to an object so the client can still use gameState.players[myId]
-            const optimizedPlayers = {};
-            for (let pid in room.players) {
-                const p = room.players[pid];
-                optimizedPlayers[pid] = {
-                    id: p.id,
-                    name: p.name,
-                    x: p.x,
-                    y: p.y,
-                    angle: p.angle,
-                    hp: p.hp,
-                    score: p.score,
-                    color: p.color
-                };
+            // Swap-and-pop removal (O(1) instead of O(n) splice)
+            if (removeBullet) {
+                bullets[i] = bullets[bullets.length - 1];
+                bullets.pop();
             }
-
-            io.to(code).emit('gameState', {
-                players: optimizedPlayers,
-                bullets: room.bullets.map(b => ({
-                    x: b.x,
-                    y: b.y
-                }))
-            });
         }
+
+        // Build compact gameState — minimize payload
+        const optimizedPlayers = {};
+        for (let pid in room.players) {
+            const p = room.players[pid];
+            optimizedPlayers[pid] = {
+                id: p.id,
+                n: p.name,
+                x: Math.round(p.x * 100) / 100,
+                y: Math.round(p.y * 100) / 100,
+                a: Math.round(p.angle * 100) / 100,
+                hp: p.hp,
+                s: p.score,
+                c: p.color
+            };
+        }
+
+        // Compact bullet data — round positions
+        const compactBullets = new Array(bullets.length);
+        for (let i = 0; i < bullets.length; i++) {
+            compactBullets[i] = {
+                x: Math.round(bullets[i].x * 100) / 100,
+                y: Math.round(bullets[i].y * 100) / 100
+            };
+        }
+
+        io.to(code).emit('gameState', {
+            players: optimizedPlayers,
+            bullets: compactBullets
+        });
     }
-}, 1000 / 30); // 30 FPS
+}, 1000 / 20); // 20 tick rate (was 30) — reduces server load ~33%, client interpolates
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
