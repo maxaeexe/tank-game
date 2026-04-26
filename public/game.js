@@ -1,4 +1,7 @@
-const socket = io({ transports: ['websocket', 'polling'] });
+// Sunucunuz farklı bir domain'deyse (örneğin Vercel ve Render), adresi buraya yazmalısınız:
+// const socket = io("https://sizin-backend-url.com", { transports: ['polling', 'websocket'] });
+const socket = io({ transports: ['polling', 'websocket'] });
+
 
 // UI Elements
 const mainMenu = document.getElementById('main-menu');
@@ -124,10 +127,10 @@ function showError(msg) {
 socket.on('joined', (data) => {
     myId = data.id;
     isHost = data.isHost;
-    
+
     mainMenu.classList.remove('active');
     lobbyMenu.classList.add('active');
-    
+
     displayRoomCode.innerText = data.code;
     gameRoomCodeDisplay.innerText = data.code;
 
@@ -138,7 +141,7 @@ socket.on('joined', (data) => {
         btnStart.style.display = 'none';
         waitingMsg.style.display = 'block';
     }
-    
+
     renderColorPicker();
 });
 
@@ -171,13 +174,13 @@ socket.on('joinedMidGame', (data) => {
         document.getElementById('ui-layer').style.pointerEvents = 'none';
         gameUi.classList.remove('hidden');
         canvas.style.display = 'block';
-        
+
         resizeCanvas();
         window.addEventListener('resize', () => {
             resizeCanvas();
             mapCacheDirty = true;
         });
-        
+
         // Show death screen for spectators
         deathScreen.classList.remove('hidden');
         respawnTimerText.innerText = 'WAITING FOR NEXT ROUND';
@@ -191,12 +194,12 @@ socket.on('updateLobby', (players) => {
     playerCountSpan.innerText = `${players.length}/8`;
 
     const usedColors = players.map(p => p.color);
-    
+
     Array.from(colorPicker.children).forEach(btn => {
         const c = btn.dataset.color;
         btn.classList.remove('disabled');
         btn.classList.remove('active');
-        
+
         if (usedColors.includes(c)) {
             const playerUsingIt = players.find(p => p.color === c);
             if (playerUsingIt.id !== myId) {
@@ -213,15 +216,15 @@ socket.on('updateLobby', (players) => {
     players.forEach(p => {
         const li = document.createElement('li');
         li.className = 'player-item';
-        
+
         const colorIndicator = document.createElement('div');
         colorIndicator.className = 'color-indicator';
         colorIndicator.style.color = p.color;
         colorIndicator.style.backgroundColor = p.color;
-        
+
         const nameText = document.createElement('span');
         nameText.innerText = p.name + (p.isHost ? ' (Host)' : '') + (p.id === myId ? ' (You)' : '');
-        
+
         li.appendChild(colorIndicator);
         li.appendChild(nameText);
         playersList.appendChild(li);
@@ -235,13 +238,13 @@ function renderColorPicker() {
         btn.className = 'color-btn';
         btn.style.backgroundColor = color;
         btn.dataset.color = color;
-        
+
         btn.addEventListener('click', () => {
             if (!btn.classList.contains('disabled')) {
                 socket.emit('changeColor', color);
             }
         });
-        
+
         colorPicker.appendChild(btn);
     });
 }
@@ -256,11 +259,11 @@ socket.on('newRound', (data) => {
     gameState.mapData = data.mapData;
     gameState.players = data.players;
     gameState.bullets = [];
-    
+
     prevGameState = null;
     currGameState = null;
     mapCacheDirty = true;
-    
+
     // Reset spectate & death state
     isSpectating = false;
     spectateTargetId = null;
@@ -273,13 +276,13 @@ socket.on('newRound', (data) => {
         document.getElementById('ui-layer').style.pointerEvents = 'none';
         gameUi.classList.remove('hidden');
         canvas.style.display = 'block';
-        
+
         resizeCanvas();
         window.addEventListener('resize', () => {
             resizeCanvas();
             mapCacheDirty = true;
         });
-        
+
         requestAnimationFrame(gameLoop);
     }
 });
@@ -294,9 +297,9 @@ function resizeCanvas() {
 window.addEventListener('keydown', (e) => {
     if (!gameState.playing) return;
     if (chatFocused) return; // Don't handle game input when typing in chat
-    
+
     if (e.key.toLowerCase() === 'w') inputState.up = true;
-    
+
     // Spectate: arrow keys to switch targets
     if (isSpectating) {
         if (e.key === 'ArrowLeft') cycleSpectate(-1);
@@ -311,13 +314,13 @@ window.addEventListener('keyup', (e) => {
 
 canvas.addEventListener('mousemove', (e) => {
     if (!gameState.playing || !gameState.players[myId]) return;
-    
+
     const myPlayer = gameState.players[myId];
     if (myPlayer.hp <= 0) return; // Don't update angle when dead
-    
+
     const screenX = canvas.width / 2 + (myPlayer.x - camera.x) * camera.zoom;
     const screenY = canvas.height / 2 + (myPlayer.y - camera.y) * camera.zoom;
-    
+
     const dx = e.clientX - screenX;
     const dy = e.clientY - screenY;
     inputState.angle = Math.atan2(dy, dx);
@@ -359,7 +362,7 @@ chatInput.addEventListener('blur', () => {
 
 chatInput.addEventListener('keydown', (e) => {
     e.stopPropagation(); // Prevent game keys from firing
-    
+
     if (e.key === 'Enter') {
         const text = chatInput.value.trim();
         if (text) {
@@ -447,7 +450,7 @@ function cycleSpectate(direction) {
 
     let currentIndex = alivePlayers.findIndex(p => p.id === spectateTargetId);
     if (currentIndex === -1) currentIndex = 0;
-    
+
     currentIndex = (currentIndex + direction + alivePlayers.length) % alivePlayers.length;
     spectateTargetId = alivePlayers[currentIndex].id;
     updateSpectateUI();
@@ -498,7 +501,7 @@ socket.on('gameState', (data) => {
     const myPlayer = gameState.players[myId];
     if (myPlayer) {
         hpValue.innerText = Math.max(0, myPlayer.hp);
-        
+
         if (myPlayer.hp <= 0 && !isSpectating) {
             // Player just died — enter spectate mode
             isSpectating = true;
@@ -593,7 +596,7 @@ function buildMapCache() {
     mctx.fillStyle = '#666';
     mctx.strokeStyle = '#444';
     mctx.lineWidth = 2;
-    
+
     const walls = gameState.mapData.walls;
     for (let i = 0; i < walls.length; i++) {
         const wall = walls[i];
@@ -700,18 +703,18 @@ function drawPlayers(interpolatedPlayers) {
         ctx.fillText(p.name, 0, -radius - 15);
 
         ctx.rotate(p.angle);
-        
+
         ctx.fillStyle = p.color;
         ctx.strokeStyle = '#222';
         ctx.lineWidth = 2;
 
         ctx.fillRect(-radius, -radius, playerSize, playerSize);
         ctx.strokeRect(-radius, -radius, playerSize, playerSize);
-        
+
         ctx.fillStyle = '#999';
         ctx.fillRect(0, -radius * 0.3, radius + 10, radius * 0.6);
         ctx.strokeRect(0, -radius * 0.3, radius + 10, radius * 0.6);
-        
+
         ctx.fillStyle = '#666';
         ctx.beginPath();
         ctx.arc(0, 0, radius * 0.6, 0, Math.PI * 2);
@@ -741,7 +744,7 @@ function drawBullets() {
         const by = startY + b.y * camera.zoom;
 
         if (bx < vpLeft || bx > vpRight || by < vpTop || by > vpBottom) continue;
-        
+
         ctx.beginPath();
         ctx.arc(bx, by, bulletScreenR, 0, Math.PI * 2);
         ctx.fill();
@@ -759,7 +762,7 @@ function gameLoop() {
 
     // Camera target: follow self if alive, or spectated player if dead
     let cameraTarget = null;
-    
+
     if (!isSpectating) {
         // Follow self
         cameraTarget = interpolatedPlayers[myId] || gameState.players[myId];

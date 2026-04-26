@@ -6,10 +6,14 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    transports: ['websocket', 'polling'],
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    },
+    transports: ['polling', 'websocket'],
     allowEIO3: true,
-    pingInterval: 2000,
-    pingTimeout: 5000
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
