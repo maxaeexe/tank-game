@@ -46,6 +46,8 @@ const availableColors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", 
 let myId = null;
 let isHost = false;
 let myColor = null;
+let roomMode = 'ffa'; // 'ffa' or 'team'
+let roomTeamSize = 2;
 
 // Game State
 let gameState = {
@@ -63,11 +65,14 @@ let prevTimestamp = 0;
 
 let inputState = {
     up: false,
+    down: false,
+    left: false,
+    right: false,
     angle: 0,
     isShooting: false
 };
 
-let lastSentInput = { up: false, angle: 0, isShooting: false };
+let lastSentInput = { up: false, down: false, left: false, right: false, angle: 0, isShooting: false };
 
 let camera = { x: 0, y: 0, zoom: 20 };
 
@@ -127,12 +132,42 @@ function showError(msg) {
 socket.on('joined', (data) => {
     myId = data.id;
     isHost = data.isHost;
+    roomMode = data.mode || 'ffa';
+    roomTeamSize = data.teamSize || 2;
 
     mainMenu.classList.remove('active');
     lobbyMenu.classList.add('active');
 
     displayRoomCode.innerText = data.code;
     gameRoomCodeDisplay.innerText = data.code;
+
+    // Show mode label
+    const lobbyModeLabel = document.getElementById('lobby-mode-label');
+    lobbyModeLabel.innerText = roomMode === 'team' ? 'TEAM DEATHMATCH' : 'FREE FOR ALL';
+
+    // Toggle lobby views based on mode
+    const ffaContent = document.getElementById('ffa-lobby-content');
+    const teamContent = document.getElementById('team-lobby-content');
+    const teamSizeSelector = document.getElementById('team-size-selector');
+
+    if (roomMode === 'team') {
+        ffaContent.style.display = 'none';
+        teamContent.style.display = 'flex';
+        lobbyMenu.classList.add('team-lobby');
+
+        if (isHost) {
+            teamSizeSelector.style.display = 'flex';
+            document.getElementById('team-size-select').value = String(roomTeamSize);
+        } else {
+            teamSizeSelector.style.display = 'none';
+        }
+    } else {
+        ffaContent.style.display = 'flex';
+        teamContent.style.display = 'none';
+        teamSizeSelector.style.display = 'none';
+        lobbyMenu.classList.remove('team-lobby');
+        renderColorPicker();
+    }
 
     if (isHost) {
         btnStart.style.display = 'block';
@@ -141,14 +176,13 @@ socket.on('joined', (data) => {
         btnStart.style.display = 'none';
         waitingMsg.style.display = 'block';
     }
-
-    renderColorPicker();
 });
 
 // --- Mid-Game Join ---
 socket.on('joinedMidGame', (data) => {
     myId = data.id;
     isHost = false;
+    roomMode = data.mode || 'ffa';
 
     gameRoomCodeDisplay.innerText = data.code;
 
@@ -157,6 +191,14 @@ socket.on('joinedMidGame', (data) => {
     gameState.players = data.players;
     gameState.bullets = [];
     mapCacheDirty = true;
+
+    // Update team scores if available
+    if (data.teamScores) {
+        const teamAScoreEl = document.getElementById('team-a-score-val');
+        const teamBScoreEl = document.getElementById('team-b-score-val');
+        if (teamAScoreEl) teamAScoreEl.innerText = data.teamScores.A;
+        if (teamBScoreEl) teamBScoreEl.innerText = data.teamScores.B;
+    }
 
     // Load chat history
     if (data.chatHistory) {
@@ -189,7 +231,22 @@ socket.on('joinedMidGame', (data) => {
     }
 });
 
-socket.on('updateLobby', (players) => {
+socket.on('updateLobby', (data) => {
+    // data is now an object with players, mode, teamSize, teamScores
+    const players = data.players || data;
+    const mode = data.mode || roomMode;
+    const teamSize = data.teamSize || roomTeamSize;
+    roomMode = mode;
+    roomTeamSize = teamSize;
+
+    if (mode === 'team') {
+        renderTeamLobby(players, teamSize);
+    } else {
+        renderFFALobby(players);
+    }
+});
+
+function renderFFALobby(players) {
     playersList.innerHTML = '';
     playerCountSpan.innerText = `${players.length}/8`;
 
@@ -229,7 +286,86 @@ socket.on('updateLobby', (players) => {
         li.appendChild(nameText);
         playersList.appendChild(li);
     });
-});
+}
+
+function renderTeamLobby(players, teamSize) {
+    const teamAList = document.getElementById('team-a-list');
+    const teamBList = document.getElementById('team-b-list');
+    const btnJoinA = document.getElementById('btn-join-team-a');
+    const btnJoinB = document.getElementById('btn-join-team-b');
+
+    teamAList.innerHTML = '';
+    teamBList.innerHTML = '';
+
+    const teamAPlayers = players.filter(p => p.team === 'A');
+    const teamBPlayers = players.filter(p => p.team === 'B');
+
+    // Update team size selector if host
+    if (isHost) {
+        const selector = document.getElementById('team-size-select');
+        if (selector.value !== String(teamSize)) {
+            selector.value = String(teamSize);
+        }
+    }
+
+    // Render Team A players
+    teamAPlayers.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'team-player-item';
+
+        const dot = document.createElement('div');
+        dot.className = 'team-color-dot';
+        dot.style.backgroundColor = '#e74c3c';
+
+        const nameText = document.createElement('span');
+        nameText.innerText = p.name + (p.isHost ? ' (Host)' : '') + (p.id === myId ? ' (You)' : '');
+
+        li.appendChild(dot);
+        li.appendChild(nameText);
+        teamAList.appendChild(li);
+    });
+
+    // Render Team B players
+    teamBPlayers.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'team-player-item';
+
+        const dot = document.createElement('div');
+        dot.className = 'team-color-dot';
+        dot.style.backgroundColor = '#3498db';
+
+        const nameText = document.createElement('span');
+        nameText.innerText = p.name + (p.isHost ? ' (Host)' : '') + (p.id === myId ? ' (You)' : '');
+
+        li.appendChild(dot);
+        li.appendChild(nameText);
+        teamBList.appendChild(li);
+    });
+
+    // Update join buttons
+    const myPlayer = players.find(p => p.id === myId);
+    btnJoinA.classList.toggle('active-team', myPlayer && myPlayer.team === 'A');
+    btnJoinB.classList.toggle('active-team', myPlayer && myPlayer.team === 'B');
+
+    btnJoinA.innerText = `JOIN TEAM A (${teamAPlayers.length}/${teamSize})`;
+    btnJoinB.innerText = `JOIN TEAM B (${teamBPlayers.length}/${teamSize})`;
+
+    if (teamAPlayers.length >= teamSize && (!myPlayer || myPlayer.team !== 'A')) {
+        btnJoinA.disabled = true;
+        btnJoinA.style.opacity = '0.5';
+    } else {
+        btnJoinA.disabled = false;
+        btnJoinA.style.opacity = '1';
+    }
+
+    if (teamBPlayers.length >= teamSize && (!myPlayer || myPlayer.team !== 'B')) {
+        btnJoinB.disabled = true;
+        btnJoinB.style.opacity = '0.5';
+    } else {
+        btnJoinB.disabled = false;
+        btnJoinB.style.opacity = '1';
+    }
+}
 
 function renderColorPicker() {
     colorPicker.innerHTML = '';
@@ -251,6 +387,20 @@ function renderColorPicker() {
 
 btnStart.addEventListener('click', () => {
     socket.emit('startGame');
+});
+
+// Team switching buttons
+document.getElementById('btn-join-team-a').addEventListener('click', () => {
+    socket.emit('switchTeam', 'A');
+});
+
+document.getElementById('btn-join-team-b').addEventListener('click', () => {
+    socket.emit('switchTeam', 'B');
+});
+
+// Team size change (host only)
+document.getElementById('team-size-select').addEventListener('change', (e) => {
+    socket.emit('setTeamSize', parseInt(e.target.value));
 });
 
 // --- Game Initialization ---
@@ -298,7 +448,11 @@ window.addEventListener('keydown', (e) => {
     if (!gameState.playing) return;
     if (chatFocused) return; // Don't handle game input when typing in chat
 
-    if (e.key.toLowerCase() === 'w') inputState.up = true;
+    const key = e.key.toLowerCase();
+    if (key === 'w') inputState.up = true;
+    if (key === 'a') inputState.left = true;
+    if (key === 's') inputState.down = true;
+    if (key === 'd') inputState.right = true;
 
     // Spectate: arrow keys to switch targets
     if (isSpectating) {
@@ -309,7 +463,12 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
     if (!gameState.playing) return;
-    if (e.key.toLowerCase() === 'w') inputState.up = false;
+    
+    const key = e.key.toLowerCase();
+    if (key === 'w') inputState.up = false;
+    if (key === 'a') inputState.left = false;
+    if (key === 's') inputState.down = false;
+    if (key === 'd') inputState.right = false;
 });
 
 canvas.addEventListener('mousemove', (e) => {
@@ -338,12 +497,19 @@ canvas.addEventListener('mouseup', (e) => {
 setInterval(() => {
     if (gameState.playing && !isSpectating) {
         const angleChanged = Math.abs(inputState.angle - lastSentInput.angle) > 0.02;
-        const movementChanged = inputState.up !== lastSentInput.up;
+        const movementChanged = inputState.up !== lastSentInput.up ||
+                                inputState.down !== lastSentInput.down ||
+                                inputState.left !== lastSentInput.left ||
+                                inputState.right !== lastSentInput.right;
         const shootingChanged = inputState.isShooting !== lastSentInput.isShooting;
 
-        if (angleChanged || movementChanged || shootingChanged || inputState.isShooting || inputState.up) {
+        if (angleChanged || movementChanged || shootingChanged || 
+            inputState.isShooting || inputState.up || inputState.down || inputState.left || inputState.right) {
             socket.emit('playerInput', inputState);
             lastSentInput.up = inputState.up;
+            lastSentInput.down = inputState.down;
+            lastSentInput.left = inputState.left;
+            lastSentInput.right = inputState.right;
             lastSentInput.angle = inputState.angle;
             lastSentInput.isShooting = inputState.isShooting;
         }
@@ -486,8 +652,20 @@ socket.on('gameState', (data) => {
             angle: p.a,
             hp: p.hp,
             score: p.s,
-            color: p.c
+            color: p.c,
+            team: p.t || null
         };
+    }
+
+    // Track game mode
+    if (data.mode) roomMode = data.mode;
+
+    // Update team scores from server tick
+    if (data.teamScores) {
+        const teamAScoreEl = document.getElementById('team-a-score-val');
+        const teamBScoreEl = document.getElementById('team-b-score-val');
+        if (teamAScoreEl) teamAScoreEl.innerText = data.teamScores.A;
+        if (teamBScoreEl) teamBScoreEl.innerText = data.teamScores.B;
     }
 
     prevGameState = currGameState;
@@ -531,16 +709,28 @@ function updateScoreUI() {
     lastScoreUpdate = now;
 
     const scoreList = document.getElementById('score-list');
-    if (scoreList) {
-        scoreList.innerHTML = '';
-        Object.values(gameState.players)
-            .sort((a, b) => (b.score || 0) - (a.score || 0))
-            .forEach(p => {
-                const li = document.createElement('li');
-                li.style.color = p.color;
-                li.innerText = `${p.name}: ${p.score || 0}`;
-                scoreList.appendChild(li);
-            });
+    const teamScoreDisplay = document.getElementById('team-score-display');
+
+    if (roomMode === 'team') {
+        // Team mode: show team scores
+        if (scoreList) scoreList.innerHTML = '';
+        if (scoreList) scoreList.style.display = 'none';
+        if (teamScoreDisplay) teamScoreDisplay.style.display = 'flex';
+    } else {
+        // FFA mode: show individual scores
+        if (teamScoreDisplay) teamScoreDisplay.style.display = 'none';
+        if (scoreList) scoreList.style.display = 'block';
+        if (scoreList) {
+            scoreList.innerHTML = '';
+            Object.values(gameState.players)
+                .sort((a, b) => (b.score || 0) - (a.score || 0))
+                .forEach(p => {
+                    const li = document.createElement('li');
+                    li.style.color = p.color;
+                    li.innerText = `${p.name}: ${p.score || 0}`;
+                    scoreList.appendChild(li);
+                });
+        }
     }
 }
 
@@ -554,6 +744,14 @@ socket.on('playerDied', (data) => {
 });
 
 socket.on('roundWinner', (data) => {
+    // Update team scores if available
+    if (data.teamScores) {
+        const teamAScoreEl = document.getElementById('team-a-score-val');
+        const teamBScoreEl = document.getElementById('team-b-score-val');
+        if (teamAScoreEl) teamAScoreEl.innerText = data.teamScores.A;
+        if (teamBScoreEl) teamBScoreEl.innerText = data.teamScores.B;
+    }
+
     addChatMessage({
         type: 'system',
         text: `🏆 ${data.name} roundu kazandı!`
@@ -702,14 +900,16 @@ function drawPlayers(interpolatedPlayers) {
         ctx.textAlign = 'center';
         ctx.fillText(p.name, 0, -radius - 15);
 
-        ctx.rotate(p.angle);
-
+        // Gövdeyi çiz (döndürmeden sabit kalsın)
         ctx.fillStyle = p.color;
         ctx.strokeStyle = '#222';
         ctx.lineWidth = 2;
 
         ctx.fillRect(-radius, -radius, playerSize, playerSize);
         ctx.strokeRect(-radius, -radius, playerSize, playerSize);
+
+        // Kafayı çiz (sadece kafayı mouse'a göre döndürerek)
+        ctx.rotate(p.angle);
 
         ctx.fillStyle = '#999';
         ctx.fillRect(0, -radius * 0.3, radius + 10, radius * 0.6);

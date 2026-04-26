@@ -45,8 +45,26 @@
         <!-- Lobby Menu -->
         <div id="lobby-menu" class="panel">
             <h2>ROOM CODE: <span id="display-room-code" class="highlight"></span></h2>
+            <div id="lobby-mode-label" class="lobby-mode-label"></div>
             
-            <div class="lobby-content">
+            <!-- Team Size Selector (host only, team mode only) -->
+            <div id="team-size-selector" class="team-size-selector" style="display:none;">
+                <label class="team-size-label">TEAM SIZE</label>
+                <select id="team-size-select" class="styled-input team-size-input">
+                    <option value="2">2v2</option>
+                    <option value="3">3v3</option>
+                    <option value="4">4v4</option>
+                    <option value="5">5v5</option>
+                    <option value="6">6v6</option>
+                    <option value="7">7v7</option>
+                    <option value="8">8v8</option>
+                    <option value="9">9v9</option>
+                    <option value="10">10v10</option>
+                </select>
+            </div>
+
+            <!-- FFA Lobby Content -->
+            <div id="ffa-lobby-content" class="lobby-content">
                 <div class="players-list-container">
                     <h3>PLAYERS (<span id="player-count">1/8</span>)</h3>
                     <ul id="players-list"></ul>
@@ -60,6 +78,20 @@
                             <div class="tank-turret"></div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Team Lobby Content (team mode only) -->
+            <div id="team-lobby-content" class="lobby-content" style="display:none;">
+                <div class="team-panel team-a-panel">
+                    <h3 class="team-header team-a-header">🔴 TEAM A</h3>
+                    <ul id="team-a-list" class="team-player-list"></ul>
+                    <button id="btn-join-team-a" class="btn team-btn team-a-btn">JOIN TEAM A</button>
+                </div>
+                <div class="team-panel team-b-panel">
+                    <h3 class="team-header team-b-header">🔵 TEAM B</h3>
+                    <ul id="team-b-list" class="team-player-list"></ul>
+                    <button id="btn-join-team-b" class="btn team-btn team-b-btn">JOIN TEAM B</button>
                 </div>
             </div>
 
@@ -78,6 +110,11 @@
                 <div class="score-container">
                     <div class="hp-label">SCORES</div>
                     <ul id="score-list" style="list-style:none; font-size:10px; margin-top:5px; line-height:1.5;"></ul>
+                    <!-- Team Score Display -->
+                    <div id="team-score-display" class="team-score-display" style="display:none;">
+                        <div class="team-score team-a-score">🔴 A: <span id="team-a-score-val">0</span></div>
+                        <div class="team-score team-b-score">🔵 B: <span id="team-b-score-val">0</span></div>
+                    </div>
                 </div>
                 <div class="room-info">ROOM: <span id="game-room-code"></span></div>
             </div>

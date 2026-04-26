@@ -186,6 +186,7 @@ function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
 }
 
 const colors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", "#1ABC9C", "#E67E22", "#E74C3C"];
+const TEAM_COLORS = { A: '#e74c3c', B: '#3498db' };
 
 // Sanitize username
 function sanitizeName(name) {
@@ -215,7 +216,9 @@ io.on('connection', (socket) => {
             spectators: {},  // Players who joined mid-game
             bullets: [],
             mapData: null,
-            chatHistory: []  // Store last 50 messages
+            chatHistory: [],  // Store last 50 messages
+            teamSize: 2,  // Default team size for team mode
+            teamScores: { A: 0, B: 0 }  // Team scores
         };
 
         joinRoom(socket, code, name);
@@ -249,16 +252,28 @@ io.on('connection', (socket) => {
 
     function joinRoom(socket, code, playerName) {
         const room = rooms[code];
-        if (Object.keys(room.players).length >= 8) {
+        const maxPlayers = room.mode === 'team' ? room.teamSize * 2 : 8;
+        if (Object.keys(room.players).length >= maxPlayers) {
             socket.emit('errorMsg', 'Oda dolu.');
             return;
         }
 
         socket.join(code);
         
-        const usedColors = Object.values(room.players).map(p => p.color);
-        const availableColors = colors.filter(c => !usedColors.includes(c));
-        const color = availableColors[0] || "#FFFFFF";
+        // Determine team and color
+        let team = null;
+        let color;
+        if (room.mode === 'team') {
+            // Auto-assign to team with fewer players
+            const teamACount = Object.values(room.players).filter(p => p.team === 'A').length;
+            const teamBCount = Object.values(room.players).filter(p => p.team === 'B').length;
+            team = teamACount <= teamBCount ? 'A' : 'B';
+            color = TEAM_COLORS[team];
+        } else {
+            const usedColors = Object.values(room.players).map(p => p.color);
+            const availableColors = colors.filter(c => !usedColors.includes(c));
+            color = availableColors[0] || "#FFFFFF";
+        }
 
         room.players[socket.id] = {
             id: socket.id,
@@ -270,28 +285,40 @@ io.on('connection', (socket) => {
             hp: 1,
             score: 0,
             lastShot: 0,
-            isHost: room.host === socket.id
+            isHost: room.host === socket.id,
+            team: team
         };
 
         socket.roomCode = code;
-        socket.emit('joined', { code, isHost: room.host === socket.id, id: socket.id });
-        io.to(code).emit('updateLobby', Object.values(room.players));
+        socket.emit('joined', { code, isHost: room.host === socket.id, id: socket.id, mode: room.mode, teamSize: room.teamSize });
+        emitLobbyUpdate(room, code);
     }
 
     // Mid-game join: player enters as dead spectator, will be alive next round
     function joinMidGame(socket, code, playerName) {
         const room = rooms[code];
+        const maxPlayers = room.mode === 'team' ? room.teamSize * 2 : 8;
         const totalPlayers = Object.keys(room.players).length;
-        if (totalPlayers >= 8) {
+        if (totalPlayers >= maxPlayers) {
             socket.emit('errorMsg', 'Oda dolu.');
             return;
         }
 
         socket.join(code);
 
-        const usedColors = Object.values(room.players).map(p => p.color);
-        const availableColors = colors.filter(c => !usedColors.includes(c));
-        const color = availableColors[0] || "#FFFFFF";
+        // Determine team and color
+        let team = null;
+        let color;
+        if (room.mode === 'team') {
+            const teamACount = Object.values(room.players).filter(p => p.team === 'A').length;
+            const teamBCount = Object.values(room.players).filter(p => p.team === 'B').length;
+            team = teamACount <= teamBCount ? 'A' : 'B';
+            color = TEAM_COLORS[team];
+        } else {
+            const usedColors = Object.values(room.players).map(p => p.color);
+            const availableColors = colors.filter(c => !usedColors.includes(c));
+            color = availableColors[0] || "#FFFFFF";
+        }
 
         // Add as player but with hp=0 (dead/spectating)
         room.players[socket.id] = {
@@ -304,7 +331,8 @@ io.on('connection', (socket) => {
             hp: 0,  // Dead — spectating until next round
             score: 0,
             lastShot: 0,
-            isHost: false
+            isHost: false,
+            team: team
         };
 
         socket.roomCode = code;
@@ -320,13 +348,25 @@ io.on('connection', (socket) => {
             id: socket.id,
             mapData: clientMapData,
             players: room.players,
-            chatHistory: room.chatHistory
+            chatHistory: room.chatHistory,
+            mode: room.mode,
+            teamScores: room.teamScores
         });
 
         // Notify everyone about the new player
         io.to(code).emit('chatMessage', {
             type: 'system',
             text: `${playerName} oyuna katıldı (izleyici olarak)`
+        });
+    }
+
+    // Emit lobby update helper
+    function emitLobbyUpdate(room, code) {
+        io.to(code).emit('updateLobby', {
+            players: Object.values(room.players),
+            mode: room.mode,
+            teamSize: room.teamSize,
+            teamScores: room.teamScores
         });
     }
 
@@ -359,12 +399,47 @@ io.on('connection', (socket) => {
         if (!socket.roomCode) return;
         const room = rooms[socket.roomCode];
         if (room && room.status === 'waiting' && room.players[socket.id]) {
+            // In team mode, color is determined by team — ignore manual color changes
+            if (room.mode === 'team') return;
             const isUsed = Object.values(room.players).some(p => p.color === color && p.id !== socket.id);
             if (!isUsed) {
                 room.players[socket.id].color = color;
-                io.to(socket.roomCode).emit('updateLobby', Object.values(room.players));
+                emitLobbyUpdate(room, socket.roomCode);
             }
         }
+    });
+
+    // Team switching
+    socket.on('switchTeam', (team) => {
+        if (!socket.roomCode) return;
+        const room = rooms[socket.roomCode];
+        if (!room || room.mode !== 'team' || room.status !== 'waiting') return;
+        if (team !== 'A' && team !== 'B') return;
+
+        const player = room.players[socket.id];
+        if (!player) return;
+
+        // Check if target team is full
+        const teamCount = Object.values(room.players).filter(p => p.team === team).length;
+        if (teamCount >= room.teamSize) {
+            socket.emit('errorMsg', 'Bu takım dolu.');
+            return;
+        }
+
+        player.team = team;
+        player.color = TEAM_COLORS[team];
+        emitLobbyUpdate(room, socket.roomCode);
+    });
+
+    // Team size change (host only)
+    socket.on('setTeamSize', (size) => {
+        if (!socket.roomCode) return;
+        const room = rooms[socket.roomCode];
+        if (!room || room.host !== socket.id || room.mode !== 'team' || room.status !== 'waiting') return;
+        size = parseInt(size);
+        if (size < 2 || size > 10) return;
+        room.teamSize = size;
+        emitLobbyUpdate(room, socket.roomCode);
     });
 
     socket.on('startGame', () => {
@@ -372,6 +447,7 @@ io.on('connection', (socket) => {
         const room = rooms[socket.roomCode];
         if (room && room.host === socket.id && room.status === 'waiting') {
             room.status = 'playing';
+            room.teamScores = { A: 0, B: 0 };
             startNewRound(room, socket.roomCode);
         }
     });
@@ -387,29 +463,59 @@ io.on('connection', (socket) => {
         const speed = 0.5;
         player.angle = input.angle;
 
-        let newX = player.x;
-        let newY = player.y;
+        let dx = 0;
+        let dy = 0;
+        
+        if (input.up) dy -= 1;
+        if (input.down) dy += 1;
+        if (input.left) dx -= 1;
+        if (input.right) dx += 1;
 
-        if (input.up) {
-            newX += Math.cos(player.angle) * speed;
-            newY += Math.sin(player.angle) * speed;
+        if (dx !== 0 || dy !== 0) {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            dx = (dx / dist) * speed;
+            dy = (dy / dist) * speed;
         }
 
         const playerSize = 2;
-        const playerRect = { x: newX - playerSize/2, y: newY - playerSize/2, width: playerSize, height: playerSize };
-        let hitWall = false;
+        let hitWallX = false;
+        let hitWallY = false;
 
-        const nearbyIndices = getWallsNear(room.mapData.spatialGrid, newX, newY, playerSize);
-        for (let j = 0; j < nearbyIndices.length; j++) {
-            if (checkCollision(playerRect, room.mapData.walls[nearbyIndices[j]])) {
-                hitWall = true;
-                break;
+        // X ekseni için çarpışma kontrolü
+        if (dx !== 0) {
+            const testRectX = { x: player.x + dx - playerSize/2, y: player.y - playerSize/2, width: playerSize, height: playerSize };
+            const nearbyX = getWallsNear(room.mapData.spatialGrid, player.x + dx, player.y, playerSize);
+            for (let j = 0; j < nearbyX.length; j++) {
+                if (checkCollision(testRectX, room.mapData.walls[nearbyX[j]])) {
+                    hitWallX = true;
+                    break;
+                }
             }
         }
 
-        if (!hitWall) {
-            player.x = newX;
-            player.y = newY;
+        // Y ekseni için çarpışma kontrolü
+        if (dy !== 0) {
+            const testRectY = { x: player.x - playerSize/2, y: player.y + dy - playerSize/2, width: playerSize, height: playerSize };
+            const nearbyY = getWallsNear(room.mapData.spatialGrid, player.x, player.y + dy, playerSize);
+            for (let j = 0; j < nearbyY.length; j++) {
+                if (checkCollision(testRectY, room.mapData.walls[nearbyY[j]])) {
+                    hitWallY = true;
+                    break;
+                }
+            }
+        }
+
+        // Duvara yaslanmışken sürüklenme hızı faktörü (çok yavaş)
+        const slideFactor = 0.25;
+
+        // X'te duvara çarpmadıysak ilerle (Y'de duvara sürtünüyorsak hızı düşür)
+        if (dx !== 0 && !hitWallX) {
+            player.x += hitWallY ? dx * slideFactor : dx;
+        }
+
+        // Y'de duvara çarpmadıysak ilerle (X'te duvara sürtünüyorsak hızı düşür)
+        if (dy !== 0 && !hitWallY) {
+            player.y += hitWallX ? dy * slideFactor : dy;
         }
 
         if (input.isShooting) {
@@ -442,30 +548,62 @@ io.on('connection', (socket) => {
                     room.host = Object.keys(room.players)[0];
                     room.players[room.host].isHost = true;
                 }
-                io.to(socket.roomCode).emit('updateLobby', Object.values(room.players));
+                emitLobbyUpdate(room, socket.roomCode);
 
                 // If game is playing, check if round should end
                 if (room.status === 'playing') {
-                    const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
-                    if (alivePlayers.length <= 1) {
-                        if (alivePlayers.length === 1) {
-                            io.to(socket.roomCode).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
-                        }
-                        room.status = 'round_over';
-                        const code = socket.roomCode;
-                        setTimeout(() => {
-                            if (rooms[code]) {
-                                rooms[code].status = 'playing';
-                                startNewRound(rooms[code], code);
-                            }
-                        }, 3000);
-                    }
+                    checkRoundEnd(room, socket.roomCode);
                 }
             }
         }
         console.log('User disconnected:', socket.id);
     });
 });
+
+// Check if a round should end
+function checkRoundEnd(room, code) {
+    const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
+
+    if (room.mode === 'team') {
+        // Team mode: round ends when one team has no alive players
+        const aliveTeamA = alivePlayers.filter(p => p.team === 'A');
+        const aliveTeamB = alivePlayers.filter(p => p.team === 'B');
+
+        if (aliveTeamA.length === 0 || aliveTeamB.length === 0) {
+            let winnerTeam = null;
+            if (aliveTeamA.length > 0) winnerTeam = 'A';
+            else if (aliveTeamB.length > 0) winnerTeam = 'B';
+
+            if (winnerTeam) {
+                room.teamScores[winnerTeam]++;
+                const teamLabel = winnerTeam === 'A' ? '🔴 Team A' : '🔵 Team B';
+                io.to(code).emit('roundWinner', { winner: winnerTeam, name: teamLabel, isTeam: true, teamScores: room.teamScores });
+            }
+
+            room.status = 'round_over';
+            setTimeout(() => {
+                if (rooms[code]) {
+                    rooms[code].status = 'playing';
+                    startNewRound(rooms[code], code);
+                }
+            }, 3000);
+        }
+    } else {
+        // FFA mode
+        if (alivePlayers.length <= 1) {
+            if (alivePlayers.length === 1) {
+                io.to(code).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
+            }
+            room.status = 'round_over';
+            setTimeout(() => {
+                if (rooms[code]) {
+                    rooms[code].status = 'playing';
+                    startNewRound(rooms[code], code);
+                }
+            }, 3000);
+        }
+    }
+}
 
 // Server Game Loop
 
@@ -552,37 +690,27 @@ setInterval(() => {
             }
 
             if (!removeBullet) {
+                const ownerPlayer = room.players[b.owner];
                 for (let pid in room.players) {
                     const p = room.players[pid];
-                    if (p.hp > 0 && (b.owner !== pid || (now - b.createdAt > 200))) {
-                        if (circleRectCollision(b.x, b.y, bulletRadius, p.x - 1, p.y - 1, 2, 2)) {
-                            p.hp -= 1;
-                            removeBullet = true;
-                            
-                            if (p.hp <= 0) {
-                                if (room.players[b.owner] && b.owner !== pid) {
-                                    room.players[b.owner].score += 1;
-                                }
-                                io.to(code).emit('playerDied', { victim: pid, killer: b.owner });
-                                
-                                const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
-                                
-                                if (alivePlayers.length <= 1) {
-                                    if (alivePlayers.length === 1) {
-                                        io.to(code).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
-                                    }
-                                    
-                                    room.status = 'round_over';
-                                    setTimeout(() => {
-                                        if (rooms[code]) {
-                                            rooms[code].status = 'playing';
-                                            startNewRound(rooms[code], code);
-                                        }
-                                    }, 3000);
-                                }
+                    if (p.hp <= 0) continue;
+                    if (b.owner === pid && (now - b.createdAt <= 200)) continue;
+
+                    // Friendly fire prevention in team mode
+                    if (room.mode === 'team' && ownerPlayer && ownerPlayer.team === p.team && b.owner !== pid) continue;
+
+                    if (circleRectCollision(b.x, b.y, bulletRadius, p.x - 1, p.y - 1, 2, 2)) {
+                        p.hp -= 1;
+                        removeBullet = true;
+                        
+                        if (p.hp <= 0) {
+                            if (ownerPlayer && b.owner !== pid) {
+                                ownerPlayer.score += 1;
                             }
-                            break;
+                            io.to(code).emit('playerDied', { victim: pid, killer: b.owner });
+                            checkRoundEnd(room, code);
                         }
+                        break;
                     }
                 }
             }
@@ -605,7 +733,8 @@ setInterval(() => {
                 a: Math.round(p.angle * 100) / 100,
                 hp: p.hp,
                 s: p.score,
-                c: p.color
+                c: p.color,
+                t: p.team || null
             };
         }
 
@@ -619,7 +748,9 @@ setInterval(() => {
 
         io.to(code).emit('gameState', {
             players: optimizedPlayers,
-            bullets: compactBullets
+            bullets: compactBullets,
+            mode: room.mode,
+            teamScores: room.mode === 'team' ? room.teamScores : null
         });
     }
 }, 1000 / 20);
