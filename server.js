@@ -6,7 +6,7 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    transports: ['websocket'], // HTTP polling'i devre dışı bırakır, lagı azaltır
+    transports: ['websocket', 'polling'], // Önce WebSocket dener, olmazsa HTTP polling'e düşer
     allowEIO3: true,
     pingInterval: 2000,        // Bağlantıyı zinde tutar
     pingTimeout: 5000
