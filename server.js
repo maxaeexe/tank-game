@@ -6,9 +6,9 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    transports: ['websocket', 'polling'], // Önce WebSocket dener, olmazsa HTTP polling'e düşer
+    transports: ['websocket', 'polling'],
     allowEIO3: true,
-    pingInterval: 2000,        // Bağlantıyı zinde tutar
+    pingInterval: 2000,
     pingTimeout: 5000
 });
 
@@ -29,7 +29,7 @@ function generateRoomCode() {
 
 // ===== SPATIAL GRID for fast wall collision lookups =====
 function buildSpatialGrid(walls, mapSize) {
-    const cellSize = 10; // spatial cell size in game units
+    const cellSize = 10;
     const gridW = Math.ceil(mapSize / cellSize) + 2;
     const gridH = Math.ceil(mapSize / cellSize) + 2;
     const grid = new Array(gridW * gridH);
@@ -80,7 +80,7 @@ function getWallsNear(spatialGrid, x, y, radius) {
 // Utility: Generate Map based on player count
 function generateMap(playerCount) {
     let size = 50;
-    let density = 0.05; // 5% of map is obstacles
+    let density = 0.05;
     
     if (playerCount >= 3 && playerCount <= 4) {
         size = 80;
@@ -146,14 +146,12 @@ function generateMap(playerCount) {
     }
 
     // Outer boundaries
-    walls.push({ x: -1, y: -1, width: size + 2, height: 1, isBoundary: true }); // Top
-    walls.push({ x: -1, y: size, width: size + 2, height: 1, isBoundary: true }); // Bottom
-    walls.push({ x: -1, y: -1, width: 1, height: size + 2, isBoundary: true }); // Left
-    walls.push({ x: size, y: -1, width: 1, height: size + 2, isBoundary: true }); // Right
+    walls.push({ x: -1, y: -1, width: size + 2, height: 1, isBoundary: true });
+    walls.push({ x: -1, y: size, width: size + 2, height: 1, isBoundary: true });
+    walls.push({ x: -1, y: -1, width: 1, height: size + 2, isBoundary: true });
+    walls.push({ x: size, y: -1, width: 1, height: size + 2, isBoundary: true });
 
-    // Build spatial grid for this map
     const spatialGrid = buildSpatialGrid(walls, size);
-
     return { size, walls, spatialGrid };
 }
 
@@ -167,7 +165,7 @@ function checkCollision(rect1, rect2) {
     );
 }
 
-// Circle - Rect Collision (inlined math, no sqrt when possible)
+// Circle - Rect Collision (no sqrt)
 function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
     let testX = cx;
     let testY = cy;
@@ -180,42 +178,59 @@ function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
 
     const distX = cx - testX;
     const distY = cy - testY;
-    // Compare squared distance to avoid sqrt
     return (distX * distX + distY * distY) <= radius * radius;
 }
 
 const colors = ["#FF5733", "#33FF57", "#3357FF", "#F1C40F", "#9B59B6", "#1ABC9C", "#E67E22", "#E74C3C"];
 
+// Sanitize username — strip dangerous chars, limit length
+function sanitizeName(name) {
+    if (!name || typeof name !== 'string') return '';
+    return name.replace(/[<>&"'\/\\]/g, '').trim().substring(0, 16);
+}
+
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
-    socket.on('createRoom', ({ mode }) => {
+    socket.on('createRoom', ({ mode, username }) => {
+        const name = sanitizeName(username);
+        if (!name || name.length < 1) {
+            socket.emit('errorMsg', 'Lütfen bir kullanıcı adı girin.');
+            return;
+        }
+
         let code = generateRoomCode();
         while (rooms[code]) code = generateRoomCode();
 
         rooms[code] = {
             id: code,
             host: socket.id,
-            mode: mode, // 'ffa' or 'team'
+            mode: mode,
             status: 'waiting',
             players: {},
             bullets: [],
             mapData: null
         };
 
-        joinRoom(socket, code);
+        joinRoom(socket, code, name);
     });
 
-    socket.on('joinRoom', (code) => {
+    socket.on('joinRoom', ({ code, username }) => {
+        const name = sanitizeName(username);
+        if (!name || name.length < 1) {
+            socket.emit('errorMsg', 'Lütfen bir kullanıcı adı girin.');
+            return;
+        }
+
         code = code.toUpperCase();
         if (rooms[code] && rooms[code].status === 'waiting') {
-            joinRoom(socket, code);
+            joinRoom(socket, code, name);
         } else {
             socket.emit('errorMsg', 'Oda bulunamadı veya oyun zaten başlamış.');
         }
     });
 
-    function joinRoom(socket, code) {
+    function joinRoom(socket, code, playerName) {
         const room = rooms[code];
         if (Object.keys(room.players).length >= 8) {
             socket.emit('errorMsg', 'Oda dolu.');
@@ -231,7 +246,7 @@ io.on('connection', (socket) => {
 
         room.players[socket.id] = {
             id: socket.id,
-            name: `Player ${Object.keys(room.players).length + 1}`,
+            name: playerName,
             color: color,
             x: 0,
             y: 0,
@@ -276,22 +291,19 @@ io.on('connection', (socket) => {
         const player = room.players[socket.id];
         if (!player || player.hp <= 0) return;
 
-        // input: { up, angle, isShooting }
-        const speed = 0.5; // units per tick
-
-        player.angle = input.angle; // Tank always faces the mouse
+        const speed = 0.5;
+        player.angle = input.angle;
 
         let newX = player.x;
         let newY = player.y;
 
-        // W key moves the tank in the direction it's facing
         if (input.up) {
             newX += Math.cos(player.angle) * speed;
             newY += Math.sin(player.angle) * speed;
         }
 
         // Collision with walls — use spatial grid
-        const playerSize = 2; // radius or half-width
+        const playerSize = 2;
         const playerRect = { x: newX - playerSize/2, y: newY - playerSize/2, width: playerSize, height: playerSize };
         let hitWall = false;
 
@@ -311,16 +323,16 @@ io.on('connection', (socket) => {
         // Shooting
         if (input.isShooting) {
             const now = Date.now();
-            if (now - player.lastShot > 800) { // 0.8s cooldown
+            if (now - player.lastShot > 800) {
                 player.lastShot = now;
-                const spawnDist = 1.0; // edge of tank
+                const spawnDist = 1.0;
                 room.bullets.push({
                     x: player.x + Math.cos(player.angle) * spawnDist,
                     y: player.y + Math.sin(player.angle) * spawnDist,
                     vx: Math.cos(player.angle) * 1.5,
                     vy: Math.sin(player.angle) * 1.5,
                     owner: socket.id,
-                    bounces: 3, // Allow 3 bounces
+                    bounces: 3,
                     createdAt: now
                 });
             }
@@ -333,10 +345,10 @@ io.on('connection', (socket) => {
             delete room.players[socket.id];
             
             if (Object.keys(room.players).length === 0) {
-                delete rooms[socket.roomCode]; // Clean up empty room
+                delete rooms[socket.roomCode];
             } else {
                 if (room.host === socket.id) {
-                    room.host = Object.keys(room.players)[0]; // Assign new host
+                    room.host = Object.keys(room.players)[0];
                     room.players[room.host].isHost = true;
                 }
                 io.to(socket.roomCode).emit('updateLobby', Object.values(room.players));
@@ -353,7 +365,6 @@ function startNewRound(room, code) {
     room.mapData = generateMap(playerCount);
     room.bullets = [];
 
-    // Spawn players
     for (let id in room.players) {
         const player = room.players[id];
         const gridX = Math.floor(Math.random() * (room.mapData.size / 10));
@@ -385,15 +396,12 @@ setInterval(() => {
         const spatialGrid = room.mapData.spatialGrid;
         const now = Date.now();
 
-        // Update bullets — use swap-and-pop instead of splice
         const bullets = room.bullets;
-        let bulletCount = bullets.length;
 
-        for (let i = bulletCount - 1; i >= 0; i--) {
+        for (let i = bullets.length - 1; i >= 0; i--) {
             const b = bullets[i];
             let removeBullet = false;
             
-            // Sub-stepping for wall collision (reduced to 3 steps)
             const steps = 3;
             const stepVx = b.vx / steps;
             const stepVy = b.vy / steps;
@@ -404,7 +412,6 @@ setInterval(() => {
                 b.x += stepVx;
                 b.y += stepVy;
                 
-                // Use spatial grid to only check nearby walls
                 const nearbyIndices = getWallsNear(spatialGrid, b.x, b.y, bulletRadius + 2);
                 for (let j = 0; j < nearbyIndices.length; j++) {
                     const wall = walls[nearbyIndices[j]];
@@ -419,7 +426,6 @@ setInterval(() => {
             if (hitWall) {
                 if (b.bounces > 0) {
                     b.bounces--;
-                    // Push bullet out of the wall
                     const overlapLeft = b.x + bulletRadius - hitWall.x;
                     const overlapRight = hitWall.x + hitWall.width - (b.x - bulletRadius);
                     const overlapTop = b.y + bulletRadius - hitWall.y;
@@ -437,29 +443,36 @@ setInterval(() => {
             }
 
             if (!removeBullet) {
-                // Player collision
                 for (let pid in room.players) {
                     const p = room.players[pid];
-                    // A bullet cannot hit its own shooter for the first 200ms (prevents instant suicide when shooting walls)
                     if (p.hp > 0 && (b.owner !== pid || (now - b.createdAt > 200))) {
                         if (circleRectCollision(b.x, b.y, bulletRadius, p.x - 1, p.y - 1, 2, 2)) {
-                            p.hp -= 1; // 1 hit to die
+                            p.hp -= 1;
                             removeBullet = true;
                             
                             if (p.hp <= 0) {
-                                // Grant score to killer
                                 if (room.players[b.owner] && b.owner !== pid) {
                                     room.players[b.owner].score += 1;
                                 }
                                 io.to(code).emit('playerDied', { victim: pid, killer: b.owner });
                                 
-                                room.status = 'round_over';
-                                setTimeout(() => {
-                                    if (rooms[code]) {
-                                        rooms[code].status = 'playing';
-                                        startNewRound(rooms[code], code);
+                                // Check how many players are still alive
+                                const alivePlayers = Object.values(room.players).filter(pl => pl.hp > 0);
+                                
+                                if (alivePlayers.length <= 1) {
+                                    // Last man standing — give winner a bonus point
+                                    if (alivePlayers.length === 1) {
+                                        io.to(code).emit('roundWinner', { winner: alivePlayers[0].id, name: alivePlayers[0].name });
                                     }
-                                }, 3000);
+                                    
+                                    room.status = 'round_over';
+                                    setTimeout(() => {
+                                        if (rooms[code]) {
+                                            rooms[code].status = 'playing';
+                                            startNewRound(rooms[code], code);
+                                        }
+                                    }, 3000);
+                                }
                             }
                             break;
                         }
@@ -467,14 +480,14 @@ setInterval(() => {
                 }
             }
 
-            // Swap-and-pop removal (O(1) instead of O(n) splice)
+            // Swap-and-pop removal
             if (removeBullet) {
                 bullets[i] = bullets[bullets.length - 1];
                 bullets.pop();
             }
         }
 
-        // Build compact gameState — minimize payload
+        // Build compact gameState
         const optimizedPlayers = {};
         for (let pid in room.players) {
             const p = room.players[pid];
@@ -490,7 +503,6 @@ setInterval(() => {
             };
         }
 
-        // Compact bullet data — round positions
         const compactBullets = new Array(bullets.length);
         for (let i = 0; i < bullets.length; i++) {
             compactBullets[i] = {
@@ -504,7 +516,7 @@ setInterval(() => {
             bullets: compactBullets
         });
     }
-}, 1000 / 20); // 20 tick rate (was 30) — reduces server load ~33%, client interpolates
+}, 1000 / 20); // 20 tick rate
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

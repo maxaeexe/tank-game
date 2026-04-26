@@ -107,8 +107,53 @@ h1.glitch {
     color: var(--primary);
     font-weight: 500;
     letter-spacing: 5px;
-    margin-bottom: 40px;
+    margin-bottom: 20px;
     font-size: 0.8rem;
+}
+
+/* Username Section */
+.username-section {
+    width: 100%;
+    max-width: 400px;
+    margin-bottom: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.username-label {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+.username-field {
+    text-align: center;
+    font-size: 1rem !important;
+    padding: 14px 20px !important;
+    border: 3px solid var(--panel-border) !important;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.username-field:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
+}
+
+.username-field.error {
+    border-color: var(--secondary) !important;
+    box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.2);
+    animation: shake 0.4s ease-out;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-8px); }
+    40% { transform: translateX(8px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(5px); }
 }
 
 .menu-actions {

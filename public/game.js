@@ -10,6 +10,7 @@ const btnCreate = document.getElementById('btn-create');
 const btnJoin = document.getElementById('btn-join');
 const btnStart = document.getElementById('btn-start');
 const roomCodeInput = document.getElementById('room-code-input');
+const usernameInput = document.getElementById('username-input');
 const errorMsg = document.getElementById('error-msg');
 const modeSelect = document.getElementById('mode-select');
 
@@ -42,10 +43,10 @@ let gameState = {
 };
 
 // ===== INTERPOLATION STATE =====
-let prevGameState = null;  // Previous server state
-let currGameState = null;  // Current server state
-let stateTimestamp = 0;    // When we received current state
-let prevTimestamp = 0;     // When we received previous state
+let prevGameState = null;
+let currGameState = null;
+let stateTimestamp = 0;
+let prevTimestamp = 0;
 
 let inputState = {
     up: false,
@@ -53,27 +54,44 @@ let inputState = {
     isShooting: false
 };
 
-// Track if input changed to avoid sending duplicate data
 let lastSentInput = { up: false, angle: 0, isShooting: false };
 
-let camera = { x: 0, y: 0, zoom: 20 }; // zoom is pixels per unit
+let camera = { x: 0, y: 0, zoom: 20 };
 
 // ===== OFFSCREEN MAP CACHE =====
-let mapCache = null;       // OffscreenCanvas for static map elements
-let mapCacheDirty = true;  // Whether we need to redraw the cache
+let mapCache = null;
+let mapCacheDirty = true;
+
+// --- Username Validation ---
+
+function getUsername() {
+    const name = usernameInput.value.trim();
+    if (!name || name.length < 1) {
+        usernameInput.classList.add('error');
+        usernameInput.focus();
+        showError('Lütfen bir kullanıcı adı girin!');
+        setTimeout(() => usernameInput.classList.remove('error'), 600);
+        return null;
+    }
+    return name;
+}
 
 // --- Main Menu ---
 
 btnCreate.addEventListener('click', () => {
-    socket.emit('createRoom', { mode: modeSelect.value });
+    const username = getUsername();
+    if (!username) return;
+    socket.emit('createRoom', { mode: modeSelect.value, username });
 });
 
 btnJoin.addEventListener('click', () => {
+    const username = getUsername();
+    if (!username) return;
     const code = roomCodeInput.value.trim().toUpperCase();
     if (code.length === 5) {
-        socket.emit('joinRoom', code);
+        socket.emit('joinRoom', { code, username });
     } else {
-        showError('Invalid room code format.');
+        showError('Geçersiz oda kodu formatı.');
     }
 });
 
@@ -115,7 +133,6 @@ socket.on('updateLobby', (players) => {
 
     const usedColors = players.map(p => p.color);
     
-    // Update color picker UI
     Array.from(colorPicker.children).forEach(btn => {
         const c = btn.dataset.color;
         btn.classList.remove('disabled');
@@ -185,7 +202,7 @@ socket.on('newRound', (data) => {
     prevGameState = null;
     currGameState = null;
     
-    // Mark map cache as dirty — needs redraw
+    // Mark map cache as dirty
     mapCacheDirty = true;
     
     deathScreen.classList.add('hidden');
@@ -193,17 +210,16 @@ socket.on('newRound', (data) => {
     if (!gameState.playing) {
         gameState.playing = true;
         lobbyMenu.classList.remove('active');
-        document.getElementById('ui-layer').style.pointerEvents = 'none'; // allow canvas interaction
+        document.getElementById('ui-layer').style.pointerEvents = 'none';
         gameUi.classList.remove('hidden');
         canvas.style.display = 'block';
         
         resizeCanvas();
         window.addEventListener('resize', () => {
             resizeCanvas();
-            mapCacheDirty = true; // resize invalidates cache
+            mapCacheDirty = true;
         });
         
-        // Start local loop
         requestAnimationFrame(gameLoop);
     }
 });
@@ -229,8 +245,6 @@ canvas.addEventListener('mousemove', (e) => {
     if (!gameState.playing || !gameState.players[myId]) return;
     
     const myPlayer = gameState.players[myId];
-    // We need to find angle from player center on screen to mouse
-    // Player is drawn at camera center roughly, but exact screen coords:
     const screenX = canvas.width / 2 + (myPlayer.x - camera.x) * camera.zoom;
     const screenY = canvas.height / 2 + (myPlayer.y - camera.y) * camera.zoom;
     
@@ -247,11 +261,9 @@ canvas.addEventListener('mouseup', (e) => {
     if (e.button === 0) inputState.isShooting = false;
 });
 
-// Send input to server — only when changed or shooting, at reduced rate
+// Send input to server
 setInterval(() => {
     if (gameState.playing) {
-        // Always send if shooting (server needs continuous signal)
-        // Otherwise, only send when input actually changed
         const angleChanged = Math.abs(inputState.angle - lastSentInput.angle) > 0.02;
         const movementChanged = inputState.up !== lastSentInput.up;
         const shootingChanged = inputState.isShooting !== lastSentInput.isShooting;
@@ -263,14 +275,14 @@ setInterval(() => {
             lastSentInput.isShooting = inputState.isShooting;
         }
     }
-}, 1000 / 20); // Match server tick rate (20)
+}, 1000 / 20);
 
 // --- Game State Update ---
 
 socket.on('gameState', (data) => {
     if (!gameState.playing) return;
 
-    // Unpack compact keys back to full names
+    // Unpack compact keys
     const expandedPlayers = {};
     for (let pid in data.players) {
         const p = data.players[pid];
@@ -298,7 +310,6 @@ socket.on('gameState', (data) => {
 
     const myPlayer = gameState.players[myId];
     if (myPlayer) {
-        // Update HP UI
         hpValue.innerText = Math.max(0, myPlayer.hp);
         
         if (myPlayer.hp <= 0 && deathScreen.classList.contains('hidden')) {
@@ -307,7 +318,6 @@ socket.on('gameState', (data) => {
         }
     }
 
-    // Update Score UI — throttled, not every frame
     updateScoreUI();
 });
 
@@ -315,7 +325,7 @@ socket.on('gameState', (data) => {
 let lastScoreUpdate = 0;
 function updateScoreUI() {
     const now = performance.now();
-    if (now - lastScoreUpdate < 500) return; // Update at most every 500ms
+    if (now - lastScoreUpdate < 500) return;
     lastScoreUpdate = now;
 
     const scoreList = document.getElementById('score-list');
@@ -339,9 +349,14 @@ socket.on('playerDied', (data) => {
     }
 });
 
+socket.on('roundWinner', (data) => {
+    // Could show a winner announcement here
+    console.log(`Round winner: ${data.name}`);
+});
+
 // --- Rendering ---
 
-// Build offscreen map cache (grid + walls) — only redrawn when map changes
+// Build offscreen map cache (grid + walls)
 function buildMapCache() {
     if (!gameState.mapData) return;
 
@@ -349,7 +364,6 @@ function buildMapCache() {
     const cacheW = mapSize * camera.zoom;
     const cacheH = mapSize * camera.zoom;
 
-    // Create offscreen canvas for map
     mapCache = document.createElement('canvas');
     mapCache.width = cacheW;
     mapCache.height = cacheH;
@@ -409,30 +423,24 @@ function drawCachedMap() {
     const startX = canvas.width / 2 - camera.x * camera.zoom;
     const startY = canvas.height / 2 - camera.y * camera.zoom;
 
-    // Only draw the visible portion (viewport culling)
-    const srcX = Math.max(0, -startX);
-    const srcY = Math.max(0, -startY);
-    const srcW = Math.min(mapCache.width - srcX, canvas.width - Math.max(0, startX));
-    const srcH = Math.min(mapCache.height - srcY, canvas.height - Math.max(0, startY));
+    // Calculate visible portion of the map cache
+    const srcX = Math.max(0, Math.floor(-startX));
+    const srcY = Math.max(0, Math.floor(-startY));
+    const destX = Math.max(0, Math.floor(startX));
+    const destY = Math.max(0, Math.floor(startY));
+    const drawW = Math.min(mapCache.width - srcX, canvas.width - destX);
+    const drawH = Math.min(mapCache.height - srcY, canvas.height - destY);
 
-    if (srcW <= 0 || srcH <= 0) return;
+    if (drawW <= 0 || drawH <= 0) return;
 
-    const destX = Math.max(0, startX) + srcX - Math.max(0, -startX + srcX);
-    const destY = Math.max(0, startY) + srcY - Math.max(0, -startY + srcY);
-
-    // Simpler approach: just drawImage with clipping
-    ctx.drawImage(mapCache, 
-        srcX, srcY, srcW, srcH,
-        Math.max(0, startX), Math.max(0, startY), srcW, srcH
-    );
+    ctx.drawImage(mapCache, srcX, srcY, drawW, drawH, destX, destY, drawW, drawH);
 }
 
-// Interpolate a value between prev and curr
+// Interpolation helpers
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
 
-// Interpolate angle (handle wrapping)
 function lerpAngle(a, b, t) {
     let diff = b - a;
     while (diff > Math.PI) diff -= Math.PI * 2;
@@ -443,7 +451,7 @@ function lerpAngle(a, b, t) {
 function getInterpolatedPlayers() {
     if (!prevGameState || !currGameState) return gameState.players;
 
-    const serverTickMs = 50; // 1000/20 = 50ms between ticks
+    const serverTickMs = 50; // 1000/20
     const elapsed = performance.now() - stateTimestamp;
     const t = Math.min(elapsed / serverTickMs, 1.0);
 
@@ -469,7 +477,7 @@ function getInterpolatedPlayers() {
 function drawPlayers(interpolatedPlayers) {
     const startX = canvas.width / 2 - camera.x * camera.zoom;
     const startY = canvas.height / 2 - camera.y * camera.zoom;
-    const playerSize = 2 * camera.zoom; // width/height
+    const playerSize = 2 * camera.zoom;
     const radius = playerSize / 2;
 
     // Viewport bounds for culling
@@ -485,7 +493,7 @@ function drawPlayers(interpolatedPlayers) {
         const px = startX + p.x * camera.zoom;
         const py = startY + p.y * camera.zoom;
 
-        // Viewport culling — skip off-screen players
+        // Viewport culling
         if (px < vpLeft || px > vpRight || py < vpTop || py > vpBottom) continue;
 
         ctx.save();
@@ -563,7 +571,7 @@ function gameLoop() {
     // Get interpolated player positions
     const interpolatedPlayers = getInterpolatedPlayers();
 
-    // Smooth camera follow using interpolated position
+    // Smooth camera follow
     const myPlayer = interpolatedPlayers[myId] || gameState.players[myId];
     if (myPlayer) {
         camera.x += (myPlayer.x - camera.x) * 0.1;
@@ -576,7 +584,7 @@ function gameLoop() {
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw cached map (grid + walls in one drawImage call)
+    // Draw cached map
     drawCachedMap();
 
     drawBullets();
