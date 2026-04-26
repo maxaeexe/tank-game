@@ -5,7 +5,12 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    transports: ['websocket'], // HTTP polling'i devre dışı bırakır, lagı azaltır
+    allowEIO3: true,
+    pingInterval: 2000,        // Bağlantıyı zinde tutar
+    pingTimeout: 5000
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -394,9 +399,20 @@ setInterval(() => {
                 }
             }
 
+            // server.js içindeki io.to(code).emit('gameState', ...) kısmını bununla değiştir:
             io.to(code).emit('gameState', {
-                players: room.players,
-                bullets: room.bullets
+                players: Object.values(room.players).map(p => ({
+                    id: p.id,
+                    x: p.x,
+                    y: p.y,
+                    angle: p.angle,
+                    hp: p.hp,
+                    color: p.color
+                })),
+                bullets: room.bullets.map(b => ({
+                    x: b.x,
+                    y: b.y
+                }))
             });
         }
     }
